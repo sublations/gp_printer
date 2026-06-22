@@ -557,6 +557,7 @@ th[aria-sort="descending"] .th-sort::after { content: " ▾"; color: var(--gold)
 .gp--white  { color: var(--coin-white); }
 .gp--green  { color: var(--coin-green); }
 .gp--profit { color: var(--pos); text-shadow: var(--shadow-drop); }
+.gp--loss   { color: var(--neg); }
 .roi-pos { color: var(--pos); }
 .roi-hot { color: var(--gold-bright); font-weight: 700; }
 
@@ -674,6 +675,171 @@ th[aria-sort="descending"] .th-sort::after { content: " ▾"; color: var(--gold)
 }
 .drawer__instructions b { color: var(--gold-bright); }
 .drawer__instructions .step { display: block; margin: 4px 0; }
+.drawer__commit { margin-top: 14px; }
+.drawer__commit--done { background: linear-gradient(180deg, #5bd11a, #36a30b); }
+
+/* ----------------------------- Flip Journal --------------------------- */
+.journal-wrap {
+  position: relative;
+  z-index: 1;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 20px 8px;
+}
+.journal { padding: 0; overflow: hidden; }
+
+.journal__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.12));
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  text-align: left;
+}
+.journal__title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  color: var(--gold);
+  text-shadow: var(--shadow-drop);
+}
+.journal__title::before { content: "📒 "; }
+.journal__chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.journal__caret { color: var(--gold); font-size: 18px; transition: transform 0.15s ease; }
+.journal__header[aria-expanded="true"] .journal__caret { transform: rotate(90deg); }
+
+.jchip {
+  padding: 2px 9px;
+  font-size: 15px;
+  border-radius: 999px;
+  border: 1px solid var(--frame-dark);
+  background: var(--stone-800);
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.jchip b { color: var(--gold-bright); }
+.jchip--profit b { color: var(--pos); }
+.jchip--loss b { color: var(--neg); }
+
+.journal__body { padding: 4px 16px 18px; border-top: 2px solid var(--frame-dark); }
+.journal__metrics { margin-top: 14px; }
+
+.journal__chart-card {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: #100d07;
+  border: 2px solid var(--frame-dark);
+  border-radius: var(--radius);
+  box-shadow: inset 2px 2px 3px rgba(0,0,0,0.7);
+}
+.journal__chart-label { display: block; color: var(--ink-faint); font-size: 15px; margin-bottom: 6px; }
+.journal__chart svg { width: 100%; height: auto; display: block; }
+
+.journal__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.journal__filters { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.chip-filter {
+  padding: 6px 13px;
+  font-family: var(--font-ui);
+  font-size: 17px;
+  color: var(--ink-dim);
+  background: linear-gradient(180deg, var(--stone-500), var(--stone-600));
+  border: 2px solid var(--frame-dark);
+  border-radius: 999px;
+  box-shadow: inset 1px 1px 0 rgba(154,135,97,0.4);
+  cursor: pointer;
+}
+.chip-filter:hover { filter: brightness(1.15); }
+.chip-filter[aria-checked="true"] { color: var(--gold-bright); box-shadow: inset 0 0 0 1px var(--gold); }
+.journal__io { display: inline-flex; gap: 6px; }
+
+.btn--sm { padding: 6px 12px; font-size: 17px; }
+.btn--danger {
+  color: #ffd9d2;
+  background: linear-gradient(180deg, #7a2b20, #531a12);
+  box-shadow: inset 1px 1px 0 rgba(255,150,130,0.35), inset -1px -1px 0 rgba(0,0,0,0.5);
+}
+.btn--danger:hover { filter: brightness(1.15); }
+
+/* Journal table specifics — headers here have no sort button, so restore
+   the padding that .flip-table th drops, and they aren't clickable rows. */
+.journal-table thead th { padding: 9px 12px; }
+.journal-table thead th.col-item { text-align: left; }
+.journal-table tbody tr { cursor: default; }
+.journal-table tbody tr:hover td { background: rgba(255, 176, 0, 0.06); }
+.journal-table td { vertical-align: middle; }
+.col-date { white-space: nowrap; }
+.col-actions { width: 1%; }
+.journal__empty { color: var(--ink-dim); font-size: 17px; line-height: 1.5; padding: 22px 4px; text-align: center; }
+.journal__empty b { color: var(--gold-soft); }
+
+.status-badge {
+  display: inline-block;
+  padding: 1px 9px;
+  font-size: 14px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.status-badge--open { color: var(--gold-bright); }
+.status-badge--done { color: var(--pos); }
+.status-badge--cancelled { color: var(--ink-faint); }
+
+.row-actions { display: inline-flex; gap: 5px; justify-content: flex-end; }
+.icon-btn {
+  width: 30px; height: 28px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  color: var(--gold-soft);
+  background: var(--stone-600);
+  border: 1px solid var(--frame-dark);
+  border-radius: var(--radius);
+  cursor: pointer;
+  box-shadow: inset 1px 1px 0 rgba(154,135,97,0.3);
+}
+.icon-btn:hover { filter: brightness(1.2); color: var(--gold-bright); }
+.icon-btn--done:hover { color: var(--pos); }
+.icon-btn--del:hover { color: var(--neg); }
+.profit-projected { color: var(--ink-dim); }
+.profit-projected::before { content: "~"; opacity: 0.7; }
+
+/* ----------------------------- Modal (entry editor) ------------------- */
+.modal { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; }
+.modal__scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.6); }
+.modal__panel {
+  position: relative;
+  width: min(480px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: 18px;
+  animation: slide-in 0.16s ease;
+}
+.entry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 4px; }
+@media (max-width: 460px) { .entry-grid { grid-template-columns: 1fr; } }
+#entry-form textarea.input { resize: vertical; font-family: var(--font-ui); }
+#entry-status.input { cursor: pointer; }
+.entry-preview {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(255,176,0,0.08), rgba(0,0,0,0.1));
+  border: 2px solid var(--frame-dark);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--radius);
+  font-size: 18px;
+  color: var(--ink);
+}
+.entry-preview b { color: var(--gold-bright); }
+.entry-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; }
 
 /* ----------------------------- Toasts --------------------------------- */
 .toasts {

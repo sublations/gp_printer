@@ -194,6 +194,65 @@
     </section>
   </main>
 
+  <!-- ===================== FLIP JOURNAL ===================== -->
+  <div class="journal-wrap">
+    <section class="journal panel" id="journal" aria-label="Flip journal">
+      <button class="journal__header" id="journal-toggle" aria-expanded="false" aria-controls="journal-body">
+        <span class="journal__title">Flip Journal</span>
+        <span class="journal__chips" id="journal-chips"></span>
+        <span class="journal__caret" aria-hidden="true">▸</span>
+      </button>
+
+      <div class="journal__body" id="journal-body" hidden>
+        <!-- Lifetime performance -->
+        <div class="journal__metrics summary" id="journal-metrics"></div>
+
+        <div class="journal__chart-card" id="journal-chart-card" hidden>
+          <span class="journal__chart-label">Cumulative realised profit</span>
+          <div class="journal__chart" id="journal-chart"></div>
+        </div>
+
+        <!-- Toolbar: status filter + data IO -->
+        <div class="journal__toolbar">
+          <div class="journal__filters" id="journal-filters" role="radiogroup" aria-label="Filter by status">
+            <button type="button" class="chip-filter" role="radio" data-filter="all" aria-checked="true">All</button>
+            <button type="button" class="chip-filter" role="radio" data-filter="open" aria-checked="false">Open</button>
+            <button type="button" class="chip-filter" role="radio" data-filter="done" aria-checked="false">Done</button>
+            <button type="button" class="chip-filter" role="radio" data-filter="cancelled" aria-checked="false">Cancelled</button>
+          </div>
+          <div class="journal__io">
+            <button type="button" class="btn btn--sm" id="journal-export">Export</button>
+            <button type="button" class="btn btn--sm" id="journal-import">Import</button>
+            <input type="file" id="journal-import-file" accept="application/json,.json" hidden />
+            <button type="button" class="btn btn--sm btn--danger" id="journal-clear">Clear all</button>
+          </div>
+        </div>
+
+        <div class="table-wrap" id="journal-table-wrap" hidden>
+          <table class="flip-table journal-table">
+            <thead>
+              <tr>
+                <th class="col-item" scope="col">Item</th>
+                <th scope="col">Status</th>
+                <th class="col-num" scope="col">Qty</th>
+                <th class="col-num" scope="col">Buy</th>
+                <th class="col-num" scope="col">Sell</th>
+                <th class="col-num" scope="col">Profit</th>
+                <th class="col-num col-date" scope="col">Committed</th>
+                <th class="col-actions" scope="col"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="journal-body-rows"></tbody>
+          </table>
+        </div>
+
+        <p class="journal__empty" id="journal-empty">
+          No committed flips yet. Open any flip from your plan and hit <b>Commit this flip to journal</b> to lock in the buy/sell prices &mdash; they'll stay here even after prices refresh.
+        </p>
+      </div>
+    </section>
+  </div>
+
   <footer class="footer">
     <p>
       Live data from the
@@ -220,7 +279,61 @@
       <div class="drawer__chart" id="drawer-chart"></div>
       <dl class="drawer__stats" id="drawer-stats"></dl>
       <div class="drawer__instructions" id="drawer-instructions"></div>
+      <button class="btn btn--primary btn--block drawer__commit" id="drawer-commit">
+        Commit this flip to journal
+      </button>
     </aside>
+  </div>
+
+  <!-- Journal entry editor -->
+  <div class="modal" id="entry-modal" hidden>
+    <div class="modal__scrim" data-close></div>
+    <div class="modal__panel panel" role="dialog" aria-modal="true" aria-labelledby="entry-title">
+      <button class="drawer__close" data-close aria-label="Close">✕</button>
+      <div class="drawer__head">
+        <img class="drawer__icon" id="entry-icon" alt="" width="40" height="40" />
+        <div>
+          <h3 class="drawer__title" id="entry-title">Edit flip</h3>
+          <p class="drawer__examine" id="entry-sub"></p>
+        </div>
+      </div>
+
+      <form id="entry-form" autocomplete="off">
+        <div class="entry-grid">
+          <label class="field">
+            <span class="field__label">Status</span>
+            <select id="entry-status" class="input">
+              <option value="open">Open (in progress)</option>
+              <option value="done">Done (completed)</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field__label">Quantity</span>
+            <input id="entry-qty" class="input" type="text" inputmode="numeric" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span class="field__label">Bought at (each)</span>
+            <input id="entry-buy" class="input" type="text" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span class="field__label">Sold at (each)</span>
+            <input id="entry-sell" class="input" type="text" spellcheck="false" />
+          </label>
+        </div>
+        <label class="field">
+          <span class="field__label">Notes</span>
+          <textarea id="entry-notes" class="input" rows="2" placeholder="Any deviations from the plan, partial fills, etc."></textarea>
+        </label>
+
+        <p class="entry-preview" id="entry-preview"></p>
+
+        <div class="entry-actions">
+          <button type="button" class="btn btn--danger" id="entry-delete">Remove</button>
+          <button type="submit" class="btn btn--primary" id="entry-save">Save</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <div class="toasts" id="toasts" aria-live="assertive"></div>

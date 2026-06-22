@@ -54,7 +54,7 @@
   ]);
 
   const BUY_LIMIT_WINDOWS_PER_DAY = 6; // 4-hour buy-limit reset → 6 windows/day
-  const CACHE = { mapping: 'gpp.mapping.v1', settings: 'gpp.settings.v1' };
+  const CACHE = { mapping: 'gpp.mapping.v1', settings: 'gpp.settings.v1', journal: 'gpp.journal.v1' };
   const MAPPING_TTL = 24 * 60 * 60 * 1000; // 1 day
   const FETCH_TIMEOUT = 15_000;
 
@@ -223,6 +223,18 @@
    * ===================================================================== */
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  /** Cycle Tab/Shift+Tab focus within `container` (modal-dialog focus trap). */
+  function trapTabKey(container, e) {
+    if (e.key !== 'Tab') return;
+    const f = $$('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])', container)
+      .filter((node) => !node.disabled && node.offsetParent !== null);
+    if (!f.length) return;
+    const first = f[0];
+    const last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
 
   function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
@@ -734,6 +746,12 @@
     open(r) {
       const d = dom.drawer;
       this.lastFocus = document.activeElement;
+      this.current = r;
+      // Reset the commit button to its default state each time.
+      const commit = $('#drawer-commit', d);
+      commit.textContent = 'Commit this flip to journal';
+      commit.classList.remove('drawer__commit--done');
+      commit.disabled = false;
       setItemIcon($('#drawer-icon', d), r);
       $('#drawer-title', d).textContent = r.name;
       $('#drawer-examine', d).textContent = r.examine || '';
@@ -784,14 +802,7 @@
 
     /** Keep Tab focus cycling within the open dialog (aria-modal contract). */
     trapFocus(e) {
-      if (e.key !== 'Tab' || dom.drawer.hidden) return;
-      const focusables = $$('button, [href], input, [tabindex]:not([tabindex="-1"])', dom.drawer)
-        .filter((node) => !node.disabled && node.offsetParent !== null);
-      if (!focusables.length) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      if (!dom.drawer.hidden) trapTabKey(dom.drawer, e);
     },
 
     async loadChart(id, container) {
@@ -866,6 +877,427 @@
   };
 
   /* ===================================================================== *
+   *  FLIP JOURNAL — persistent committed flips + performance tracking
+   * ===================================================================== */
+
+  function uid() {
+    try { return crypto.randomUUID(); }
+    catch { return 'f' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36); }
+  }
+
+  function isValidEntry(e) {
+    return e && typeof e === 'object' && e.id != null && e.itemId != null
+      && e.plannedBuy != null && e.plannedSell != null && e.plannedQty != null;
+  }
+
+  function normaliseEntry(e) {
+    const num = (v) => (v != null && isFinite(+v) ? +v : null);
+    return {
+      id: String(e.id),
+      itemId: +e.itemId,
+      itemName: e.itemName || ('Item ' + e.itemId),
+      icon: e.icon || '',
+      members: !!e.members,
+      plannedBuy: +e.plannedBuy, plannedSell: +e.plannedSell, plannedQty: +e.plannedQty,
+      actualBuy: num(e.actualBuy), actualSell: num(e.actualSell), actualQty: num(e.actualQty),
+      status: ['open', 'done', 'cancelled'].includes(e.status) ? e.status : 'open',
+      committedAt: num(e.committedAt) || Date.now(),
+      completedAt: num(e.completedAt),
+      notes: typeof e.notes === 'string' ? e.notes : '',
+    };
+  }
+
+  /** Effective economics for an entry — actuals override the committed plan. */
+  function entryEconomics(e) {
+    const buy = e.actualBuy != null ? e.actualBuy : e.plannedBuy;
+    const sell = e.actualSell != null ? e.actualSell : e.plannedSell;
+    const qty = e.actualQty != null ? e.actualQty : e.plannedQty;
+    const taxPer = sell > 0 ? taxOf(sell, e.itemId) : 0;
+    return {
+      buy, sell, qty, taxPer,
+      profit: Math.round(qty * (sell - buy - taxPer)),
+      invested: Math.round(qty * buy),
+      roi: qty * buy > 0 ? (sell - buy - taxPer) / buy : 0,
+    };
+  }
+
+  const Journal = {
+    entries: [],
+
+    load() {
+      const data = Store.get(CACHE.journal);
+      this.entries = Array.isArray(data) ? data.filter(isValidEntry).map(normaliseEntry) : [];
+    },
+    save() { Store.set(CACHE.journal, this.entries); },
+
+    get(id) { return this.entries.find((x) => x.id === id); },
+    remove(id) { this.entries = this.entries.filter((x) => x.id !== id); this.save(); },
+    clear() { this.entries = []; this.save(); },
+    update(id, patch) {
+      const e = this.get(id);
+      if (e) { Object.assign(e, patch); this.save(); }
+      return e;
+    },
+
+    /** Snapshot a plan row as a new OPEN journal entry. */
+    commit(r) {
+      const entry = normaliseEntry({
+        id: uid(), itemId: r.id, itemName: r.name, icon: r.icon, members: r.members,
+        plannedBuy: r.buy, plannedSell: r.sell, plannedQty: r.qty,
+        status: 'open', committedAt: Date.now(),
+      });
+      this.entries.unshift(entry);
+      this.save();
+      return entry;
+    },
+
+    list(filter) {
+      return filter && filter !== 'all' ? this.entries.filter((e) => e.status === filter) : this.entries;
+    },
+
+    /** Lifetime performance across completed flips. */
+    metrics() {
+      const done = this.entries.filter((e) => e.status === 'done');
+      const open = this.entries.filter((e) => e.status === 'open');
+      let realized = 0, invested = 0, wins = 0, taxPaid = 0, best = null;
+      for (const e of done) {
+        const ec = entryEconomics(e);
+        realized += ec.profit; invested += ec.invested; taxPaid += ec.taxPer * ec.qty;
+        if (ec.profit > 0) wins++;
+        if (!best || ec.profit > best.profit) best = { name: e.itemName, profit: ec.profit };
+      }
+      return {
+        doneCount: done.length, openCount: open.length,
+        realized, invested,
+        roi: invested > 0 ? realized / invested : 0,
+        winRate: done.length ? wins / done.length : 0,
+        avgPerFlip: done.length ? Math.round(realized / done.length) : 0,
+        taxPaid: Math.round(taxPaid),
+        openProjected: open.reduce((s, e) => s + entryEconomics(e).profit, 0),
+        best,
+      };
+    },
+
+    /** Cumulative realised profit, ordered by completion time. */
+    cumulativeSeries() {
+      const done = this.entries.filter((e) => e.status === 'done')
+        .slice().sort((a, b) => (a.completedAt || a.committedAt) - (b.completedAt || b.committedAt));
+      let cum = 0;
+      return done.map((e) => { cum += entryEconomics(e).profit; return cum; });
+    },
+
+    exportPayload() {
+      return { app: 'GP Printer', type: 'flip-journal', version: 1, exportedAt: new Date().toISOString(), entries: this.entries };
+    },
+
+    /** Merge imported entries, de-duped by id. Returns {added, skipped}. */
+    importPayload(payload) {
+      const incoming = Array.isArray(payload) ? payload
+        : (payload && Array.isArray(payload.entries) ? payload.entries : null);
+      if (!incoming) throw new Error('unrecognised file format');
+      const have = new Set(this.entries.map((e) => e.id));
+      let added = 0, skipped = 0;
+      for (const raw of incoming) {
+        if (!isValidEntry(raw) || have.has(String(raw.id))) { skipped++; continue; }
+        have.add(String(raw.id));
+        this.entries.push(normaliseEntry(raw));
+        added++;
+      }
+      this.entries.sort((a, b) => b.committedAt - a.committedAt);
+      this.save();
+      return { added, skipped };
+    },
+  };
+
+  /* --- small SVG helper for the cumulative chart --- */
+  function svgEl(tag, attrs) {
+    const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  }
+
+  function cumulativeChart(series) {
+    const W = 760, H = 150, PAD = 10;
+    const min = Math.min(0, ...series), max = Math.max(0, ...series);
+    const range = (max - min) || 1;
+    const n = series.length;
+    const x = (i) => PAD + (n === 1 ? 0 : (i / (n - 1)) * (W - PAD * 2));
+    const y = (v) => PAD + (1 - (v - min) / range) * (H - PAD * 2);
+    let d = '';
+    series.forEach((v, i) => { d += (d ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1) + ' '; });
+    const last = series[series.length - 1];
+    const colour = last >= 0 ? 'var(--pos)' : 'var(--neg)';
+    const zeroY = y(0).toFixed(1);
+
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `Cumulative realised profit: ${Fmt.gp(last)}` });
+    svg.append(svgEl('line', { class: 'spark-axis', x1: PAD, y1: zeroY, x2: W - PAD, y2: zeroY }));
+    const area = svgEl('path', { d: `${d}L ${x(n - 1).toFixed(1)} ${zeroY} L ${x(0).toFixed(1)} ${zeroY} Z`, fill: colour, 'fill-opacity': '0.12' });
+    svg.append(area);
+    svg.append(svgEl('path', { d, fill: 'none', stroke: colour, 'stroke-width': '2' }));
+    return svg;
+  }
+
+  const JournalUI = {
+    filter: 'all',
+    open: false,
+
+    init() {
+      const s = Store.get(CACHE.settings) || {};
+      this.filter = ['all', 'open', 'done', 'cancelled'].includes(s.journalFilter) ? s.journalFilter : 'all';
+      this.open = !!s.journalOpen;
+      this.applyFilterButtons();
+      $('#journal-toggle').setAttribute('aria-expanded', String(this.open));
+      $('#journal-body').hidden = !this.open;
+      this.render();
+    },
+
+    toggle(force) {
+      this.open = force != null ? force : !this.open;
+      $('#journal-toggle').setAttribute('aria-expanded', String(this.open));
+      $('#journal-body').hidden = !this.open;
+      saveSettings();
+      if (this.open) this.render();
+    },
+
+    applyFilterButtons() {
+      $$('#journal-filters [role="radio"]').forEach((b) => {
+        const on = b.dataset.filter === this.filter;
+        b.setAttribute('aria-checked', String(on));
+        b.tabIndex = on ? 0 : -1;
+      });
+    },
+
+    setFilter(f) {
+      this.filter = f;
+      this.applyFilterButtons();
+      saveSettings();
+      this.renderTable();
+    },
+
+    render() {
+      this.renderChips();
+      this.renderMetrics();
+      this.renderChart();
+      this.renderTable();
+    },
+
+    chip(text, value, kind) {
+      const c = el('span', { class: `jchip ${kind ? 'jchip--' + kind : ''}`.trim() }, text);
+      if (value != null) c.append(el('b', {}, value));
+      return c;
+    },
+
+    renderChips() {
+      const m = Journal.metrics();
+      const net = m.realized;
+      $('#journal-chips').replaceChildren(
+        this.chip(`${m.openCount} open`),
+        this.chip(`${m.doneCount} done`),
+        this.chip('net ', Fmt.gp(net), net >= 0 ? 'profit' : 'loss'),
+      );
+    },
+
+    renderMetrics() {
+      const m = Journal.metrics();
+      const card = (label, valueNode, sub) => el('article', { class: 'stat' },
+        el('span', { class: 'stat__label' }, label),
+        el('span', { class: 'stat__value' }, valueNode),
+        sub ? el('span', { class: 'stat__label', style: 'text-transform:none;margin-top:2px' }, sub) : null,
+      );
+      const profitNode = el('span', { class: 'gp ' + (m.realized >= 0 ? 'gp--profit' : 'gp--loss'), title: Fmt.full(m.realized) + ' gp' }, Fmt.gp(m.realized));
+      $('#journal-metrics').replaceChildren(
+        card('Realised P/L', profitNode, m.openProjected ? `+${Fmt.gp(m.openProjected)} projected open` : null),
+        card('Completed', String(m.doneCount), `${m.openCount} still open`),
+        card('Win rate', m.doneCount ? Fmt.pct(m.winRate, 0) : '—', m.best ? `best ${Fmt.gp(m.best.profit)}` : null),
+        card('Realised ROI', m.invested ? Fmt.pct(m.roi) : '—', m.doneCount ? `avg ${Fmt.gp(m.avgPerFlip)}/flip` : null),
+      );
+    },
+
+    renderChart() {
+      const series = Journal.cumulativeSeries();
+      const card = $('#journal-chart-card');
+      if (series.length < 2) { card.hidden = true; return; }
+      card.hidden = false;
+      $('#journal-chart').replaceChildren(cumulativeChart(series));
+    },
+
+    renderTable() {
+      const rows = Journal.list(this.filter);
+      const wrap = $('#journal-table-wrap');
+      const empty = $('#journal-empty');
+      if (!Journal.entries.length) {
+        wrap.hidden = true; empty.hidden = false;
+        empty.innerHTML = 'No committed flips yet. Open any flip from your plan and hit <b>Commit this flip to journal</b> to lock in the buy/sell prices &mdash; they\'ll stay here even after prices refresh.';
+        return;
+      }
+      if (!rows.length) {
+        wrap.hidden = true; empty.hidden = false;
+        empty.textContent = `No ${this.filter} flips.`;
+        return;
+      }
+      empty.hidden = true; wrap.hidden = false;
+      $('#journal-body-rows').replaceChildren(...rows.map((e) => this.row(e)));
+    },
+
+    row(e) {
+      const ec = entryEconomics(e);
+      const icon = el('img', { class: 'item-cell__icon', alt: '', loading: 'lazy', width: 28, height: 28 });
+      setItemIcon(icon, { id: e.itemId, icon: e.icon });
+
+      const nameCell = el('td', { class: 'col-item' },
+        el('div', { class: 'item-cell' }, icon,
+          el('span', { class: 'item-cell__name' }, e.itemName,
+            e.members ? el('span', { class: 'members-star', title: 'Members item' }, '★') : null)));
+
+      const badge = el('td', {}, el('span', { class: `status-badge status-badge--${e.status}` }, e.status));
+
+      let profitCell;
+      if (e.status === 'cancelled') {
+        profitCell = el('td', { class: 'col-num' }, '—');
+      } else if (e.status === 'done') {
+        profitCell = el('td', { class: 'col-num' },
+          el('span', { class: 'gp ' + (ec.profit >= 0 ? 'gp--profit' : 'gp--loss'), title: Fmt.full(ec.profit) + ' gp' }, Fmt.gp(ec.profit)));
+      } else {
+        profitCell = el('td', { class: 'col-num' },
+          el('span', { class: 'profit-projected', title: 'Projected from committed prices' }, Fmt.gp(ec.profit)));
+      }
+
+      const actions = el('td', { class: 'col-actions' },
+        el('div', { class: 'row-actions' },
+          e.status === 'open'
+            ? el('button', { class: 'icon-btn icon-btn--done', title: 'Mark complete', 'aria-label': `Mark ${e.itemName} complete`, dataset: { action: 'done', id: e.id } }, '✓')
+            : null,
+          el('button', { class: 'icon-btn', title: 'Edit', 'aria-label': `Edit ${e.itemName}`, dataset: { action: 'edit', id: e.id } }, '✎'),
+          el('button', { class: 'icon-btn icon-btn--del', title: 'Remove', 'aria-label': `Remove ${e.itemName}`, dataset: { action: 'del', id: e.id } }, '🗑'),
+        ));
+
+      return el('tr', {},
+        nameCell, badge,
+        el('td', { class: 'col-num' }, Fmt.full(ec.qty)),
+        el('td', { class: 'col-num' }, UI.coin(ec.buy)),
+        el('td', { class: 'col-num' }, UI.coin(ec.sell)),
+        profitCell,
+        el('td', { class: 'col-num col-date', title: new Date(e.committedAt).toLocaleString() },
+          new Date(e.committedAt).toLocaleDateString([], { month: 'short', day: 'numeric' })),
+        actions,
+      );
+    },
+  };
+
+  const EntryEditor = {
+    current: null,
+    lastFocus: null,
+
+    open(id, presetStatus) {
+      const e = Journal.get(id);
+      if (!e) return;
+      this.current = e;
+      this.lastFocus = document.activeElement;
+      setItemIcon($('#entry-icon'), { id: e.itemId, icon: e.icon });
+      $('#entry-title').textContent = e.itemName;
+      $('#entry-sub').textContent = `Committed ${new Date(e.committedAt).toLocaleString()} · plan ${Fmt.full(e.plannedQty)} @ ${Fmt.gp(e.plannedBuy)}→${Fmt.gp(e.plannedSell)}`;
+      $('#entry-status').value = presetStatus || e.status;
+      $('#entry-qty').value = e.actualQty != null ? e.actualQty : e.plannedQty;
+      $('#entry-buy').value = e.actualBuy != null ? e.actualBuy : e.plannedBuy;
+      $('#entry-sell').value = e.actualSell != null ? e.actualSell : e.plannedSell;
+      $('#entry-notes').value = e.notes || '';
+      this.preview();
+      $('#entry-modal').hidden = false;
+      document.body.style.overflow = 'hidden';
+      $('#entry-qty').focus();
+      $('#entry-qty').select();
+    },
+
+    readForm() {
+      return {
+        buy: parseGp($('#entry-buy').value),
+        sell: parseGp($('#entry-sell').value),
+        qty: parseGp($('#entry-qty').value),
+        status: $('#entry-status').value,
+        notes: $('#entry-notes').value.trim(),
+      };
+    },
+
+    preview() {
+      const { buy, sell, qty, status } = this.readForm();
+      const node = $('#entry-preview');
+      if (status === 'cancelled') { node.innerHTML = 'Cancelled — no profit or loss recorded.'; return; }
+      if (![buy, sell, qty].every(isFinite) || qty <= 0) { node.textContent = 'Enter quantity, buy and sell prices.'; return; }
+      const taxPer = sell > 0 ? taxOf(sell, this.current.itemId) : 0;
+      const profit = Math.round(qty * (sell - buy - taxPer));
+      const invested = qty * buy;
+      const roi = invested > 0 ? profit / invested : 0;
+      const verb = status === 'done' ? 'Realised' : 'Projected';
+      const colour = profit >= 0 ? 'var(--pos)' : 'var(--neg)';
+      node.innerHTML = `${verb} profit <b style="color:${colour}">${Fmt.gp(profit)}</b> on ${Fmt.gp(invested)} invested · ${Fmt.pct(roi)} · after ${Fmt.gp(taxPer * qty)} GE tax.`;
+    },
+
+    save(ev) {
+      ev.preventDefault();
+      const e = this.current;
+      if (!e) return;
+      const { buy, sell, qty, status, notes } = this.readForm();
+      if (![buy, sell, qty].every(isFinite) || qty <= 0 || buy < 0 || sell < 0) {
+        UI.toast('Enter a valid quantity and prices.', 'error');
+        return;
+      }
+      Journal.update(e.id, {
+        actualBuy: buy, actualSell: sell, actualQty: qty, status, notes,
+        completedAt: status === 'done' ? (e.completedAt || Date.now()) : null,
+      });
+      this.close();
+      JournalUI.render();
+      UI.toast('Flip updated.', 'ok');
+    },
+
+    del() {
+      const e = this.current;
+      if (!e) return;
+      if (!window.confirm(`Remove this ${e.itemName} flip from your journal?`)) return;
+      Journal.remove(e.id);
+      this.close();
+      JournalUI.render();
+      UI.toast('Flip removed.');
+    },
+
+    close() {
+      $('#entry-modal').hidden = true;
+      document.body.style.overflow = '';
+      if (this.lastFocus && document.contains(this.lastFocus)) this.lastFocus.focus();
+      this.current = null;
+    },
+  };
+
+  /* --- journal data import / export --- */
+  function exportJournal() {
+    if (!Journal.entries.length) { UI.toast('Nothing to export yet.'); return; }
+    const json = JSON.stringify(Journal.exportPayload(), null, 2);
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const a = el('a', { href: url, download: `gp-printer-journal-${new Date().toISOString().slice(0, 10)}.json` });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    UI.toast(`Exported ${Journal.entries.length} flips.`, 'ok');
+  }
+
+  function importJournal(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const { added, skipped } = Journal.importPayload(JSON.parse(reader.result));
+        JournalUI.render();
+        if (added && !JournalUI.open) JournalUI.toggle(true);
+        UI.toast(`Imported ${added} flip${added === 1 ? '' : 's'}${skipped ? `, skipped ${skipped}` : ''}.`, added ? 'ok' : '');
+      } catch (err) {
+        UI.toast(`Import failed: ${err.message}`, 'error');
+      }
+    };
+    reader.onerror = () => UI.toast('Could not read that file.', 'error');
+    reader.readAsText(file);
+  }
+
+  /* ===================================================================== *
    *  EVENTS
    * ===================================================================== */
   function wireEvents() {
@@ -920,10 +1352,81 @@
       UI.announce(`Sorted by ${btn.textContent.trim()}, ${state.sort.dir === 'asc' ? 'ascending' : 'descending'}.`);
     });
 
-    // Drawer - close on scrim/✕, trap focus while open, Escape to close.
+    // Drawer - close on scrim/✕, trap focus while open.
     dom.drawer.addEventListener('click', (e) => { if (e.target.dataset.close !== undefined) Drawer.close(); });
     dom.drawer.addEventListener('keydown', (e) => Drawer.trapFocus(e));
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dom.drawer.hidden) Drawer.close(); });
+
+    // Commit the open flip to the journal.
+    $('#drawer-commit').addEventListener('click', () => {
+      const r = Drawer.current;
+      if (!r) return;
+      Journal.commit(r);
+      const btn = $('#drawer-commit');
+      btn.textContent = 'Committed ✓';
+      btn.classList.add('drawer__commit--done');
+      btn.disabled = true;
+      JournalUI.render();
+      if (!JournalUI.open) { JournalUI.toggle(true); $('#journal').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+      UI.toast(`Committed: ${Fmt.full(r.qty)}× ${r.name}`, 'ok');
+    });
+
+    // Journal: collapse toggle.
+    $('#journal-toggle').addEventListener('click', () => JournalUI.toggle());
+
+    // Journal: status filter (click + arrow keys).
+    const filters = $('#journal-filters');
+    filters.addEventListener('click', (e) => {
+      const b = e.target.closest('[role="radio"]');
+      if (b) JournalUI.setFilter(b.dataset.filter);
+    });
+    wireRadioKeys(filters, (b) => JournalUI.setFilter(b.dataset.filter));
+
+    // Journal: row actions (delegated).
+    $('#journal-body-rows').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      if (action === 'del') {
+        const entry = Journal.get(id);
+        if (entry && window.confirm(`Remove this ${entry.itemName} flip from your journal?`)) { Journal.remove(id); JournalUI.render(); UI.toast('Flip removed.'); }
+      } else if (action === 'done') {
+        EntryEditor.open(id, 'done');
+      } else {
+        EntryEditor.open(id);
+      }
+    });
+
+    // Journal: import / export / clear.
+    $('#journal-export').addEventListener('click', exportJournal);
+    $('#journal-import').addEventListener('click', () => $('#journal-import-file').click());
+    $('#journal-import-file').addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) importJournal(file);
+      e.target.value = ''; // allow re-importing the same file
+    });
+    $('#journal-clear').addEventListener('click', () => {
+      if (!Journal.entries.length) { UI.toast('Journal is already empty.'); return; }
+      if (window.confirm(`Delete all ${Journal.entries.length} journal entries? Export first if you want a backup. This cannot be undone.`)) {
+        Journal.clear(); JournalUI.render(); UI.toast('Journal cleared.');
+      }
+    });
+
+    // Entry editor modal.
+    const modal = $('#entry-modal');
+    modal.addEventListener('click', (e) => { if (e.target.dataset.close !== undefined) EntryEditor.close(); });
+    modal.addEventListener('keydown', (e) => { if (!modal.hidden) trapTabKey(modal, e); });
+    $('#entry-form').addEventListener('submit', (e) => EntryEditor.save(e));
+    $('#entry-delete').addEventListener('click', () => EntryEditor.del());
+    ['#entry-buy', '#entry-sell', '#entry-qty'].forEach((sel) =>
+      $(sel).addEventListener('input', () => EntryEditor.preview()));
+    $('#entry-status').addEventListener('change', () => EntryEditor.preview());
+
+    // Global Escape closes whichever overlay is open.
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (!modal.hidden) EntryEditor.close();
+      else if (!dom.drawer.hidden) Drawer.close();
+    });
   }
 
   /** Arrow/Home/End keyboard navigation for an ARIA radiogroup of buttons. */
@@ -993,6 +1496,8 @@
       account: state.account,
       filters: state.filters,
       autoRefresh: state.autoRefresh,
+      journalOpen: JournalUI.open,
+      journalFilter: JournalUI.filter,
     });
   }
 
@@ -1026,6 +1531,8 @@
   function init() {
     UI.cache();
     loadSettings();
+    Journal.load();
+    JournalUI.init();
     wireEvents();
     setupAutoRefresh();
     UI.status('idle', 'Ready to crunch the market.');

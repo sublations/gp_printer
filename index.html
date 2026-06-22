@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="GP Printer - a Grand Exchange merchanting calculator for Old School RuneScape. Ingests live GE prices and trade volumes to surface the most profitable flips for your stack." />
+  <meta name="color-scheme" content="dark" />
+  <title>GP Printer - OSRS Grand Exchange Flipping Calculator</title>
+
+  <link rel="icon" href="https://oldschool.runescape.wiki/w/Special:FilePath/Coins_10000.png" />
+
+  <!-- Pixel/terminal fonts that read close to the OSRS interface font.
+       (RuneScape's own font is not redistributed on a public CDN; these
+        match the bitmap/terminal feel and keep the tool dependency-light.) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Jersey+25&family=VT323&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <header class="masthead">
+    <div class="masthead__brand">
+      <img class="masthead__coin" src="https://oldschool.runescape.wiki/w/Special:FilePath/Coins_10000.png" alt="" width="40" height="36" />
+      <div>
+        <h1 class="masthead__title">GP Printer</h1>
+        <p class="masthead__tagline">Grand Exchange merchanting calculator &mdash; buy low, sell high, print gp.</p>
+      </div>
+    </div>
+    <div class="masthead__status" id="status-bar">
+      <span class="status-dot" id="status-dot" data-state="idle"></span>
+      <span class="status-text" id="status-text">Ready to crunch the market.</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ===================== CONTROLS ===================== -->
+    <section class="panel controls" aria-label="Flip settings">
+      <h2 class="panel__title">Trade Setup</h2>
+
+      <div class="field">
+        <label class="field__label" for="stack-input">Your coin stack</label>
+        <div class="stack-input">
+          <span class="stack-input__coin" aria-hidden="true"></span>
+          <input
+            id="stack-input"
+            class="input input--stack"
+            type="text"
+            inputmode="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="e.g. 100m, 5.5b, 250k"
+            value="10m"
+            aria-describedby="stack-parsed" />
+        </div>
+        <p class="field__hint" id="stack-parsed">Type how much gp you want to flip with. Shorthand works: <b>k</b>, <b>m</b>, <b>b</b>.</p>
+      </div>
+
+      <div class="field">
+        <span class="field__label" id="strategy-label">Flipping style</span>
+        <div class="strategy-tabs" id="strategy-tabs" role="radiogroup" aria-labelledby="strategy-label">
+          <button type="button" class="strategy-tab" role="radio" data-strategy="short" aria-checked="true">
+            <span class="strategy-tab__name">Short&nbsp;Term</span>
+            <span class="strategy-tab__sub">High volume &middot; fast</span>
+          </button>
+          <button type="button" class="strategy-tab" role="radio" data-strategy="long" aria-checked="false">
+            <span class="strategy-tab__name">Long&nbsp;Term</span>
+            <span class="strategy-tab__sub">Big margins &middot; patient</span>
+          </button>
+          <button type="button" class="strategy-tab" role="radio" data-strategy="risky" aria-checked="false">
+            <span class="strategy-tab__name">Risky</span>
+            <span class="strategy-tab__sub">Volatile &middot; high ROI</span>
+          </button>
+          <button type="button" class="strategy-tab" role="radio" data-strategy="balanced" aria-checked="false">
+            <span class="strategy-tab__name">Balanced</span>
+            <span class="strategy-tab__sub">Safe all-rounder</span>
+          </button>
+        </div>
+        <p class="field__hint" id="strategy-blurb"></p>
+      </div>
+
+      <div class="field field--inline">
+        <span class="field__label">Account</span>
+        <div class="toggle-group" id="account-toggle" role="radiogroup" aria-label="Account type">
+          <button class="toggle" data-account="members" role="radio" aria-checked="true">
+            <span class="members-star" aria-hidden="true">★</span> Members
+          </button>
+          <button class="toggle" data-account="f2p" role="radio" aria-checked="false">F2P only</button>
+        </div>
+      </div>
+
+      <details class="advanced">
+        <summary>Advanced filters</summary>
+        <div class="advanced__grid">
+          <label class="field">
+            <span class="field__label">Min. daily volume</span>
+            <input id="min-volume" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
+            <span class="field__hint">Lowest units traded / day. <code>auto</code> = per-style default.</span>
+          </label>
+          <label class="field">
+            <span class="field__label">Max. buy price (per item)</span>
+            <input id="max-price" class="input" type="text" value="none" autocomplete="off" spellcheck="false" />
+            <span class="field__hint">Cap on single-item cost. e.g. <code>2m</code>.</span>
+          </label>
+          <label class="field">
+            <span class="field__label">Min. profit margin</span>
+            <input id="min-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
+            <span class="field__hint">Lowest return after tax. e.g. <code>1.5%</code>.</span>
+          </label>
+          <label class="field">
+            <span class="field__label">Spread across</span>
+            <input id="diversify" class="input" type="number" min="1" max="30" value="8" />
+            <span class="field__hint">Max different items in your plan.</span>
+          </label>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" id="auto-refresh" />
+          <span>Auto-refresh prices every 60s</span>
+        </label>
+      </details>
+
+      <button class="btn btn--primary btn--block" id="calc-btn">
+        <span class="btn__label">Find me flips</span>
+      </button>
+
+      <p class="controls__meta" id="updated-meta">Prices not loaded yet.</p>
+    </section>
+
+    <!-- ===================== RESULTS ===================== -->
+    <section class="results">
+      <!-- Concise screen-reader announcements only (not the whole table). -->
+      <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
+
+      <div class="summary" id="summary" hidden>
+        <article class="stat">
+          <span class="stat__label">Capital deployed</span>
+          <span class="stat__value gp" id="stat-outlay">&mdash;</span>
+        </article>
+        <article class="stat stat--accent">
+          <span class="stat__label">Est. profit / cycle</span>
+          <span class="stat__value gp gp--profit" id="stat-profit">&mdash;</span>
+        </article>
+        <article class="stat">
+          <span class="stat__label">Blended margin</span>
+          <span class="stat__value" id="stat-roi">&mdash;</span>
+        </article>
+        <article class="stat">
+          <span class="stat__label">Time horizon</span>
+          <span class="stat__value" id="stat-horizon">&mdash;</span>
+        </article>
+      </div>
+
+      <div class="results__bar" id="results-bar" hidden>
+        <h2 class="results__title">Your flip plan</h2>
+        <p class="results__note" id="results-note"></p>
+      </div>
+
+      <div class="table-wrap" id="table-wrap" hidden>
+        <table class="flip-table" id="flip-table">
+          <thead>
+            <tr>
+              <th class="col-item" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="name">Item</button></th>
+              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="buy">Buy at</button></th>
+              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="sell">Sell at</button></th>
+              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="qty">Qty</button></th>
+              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="outlay">Outlay</button></th>
+              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="profit">Profit</button></th>
+              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="roi">Margin</button></th>
+              <th class="col-num col-vol" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="vol24">Vol / day</button></th>
+            </tr>
+          </thead>
+          <tbody id="flip-body"></tbody>
+        </table>
+      </div>
+
+      <!-- Placeholder / empty / loading states -->
+      <div class="placeholder" id="placeholder">
+        <div class="placeholder__art" aria-hidden="true"></div>
+        <h3 class="placeholder__title">No plan yet</h3>
+        <p class="placeholder__text">Set your coin stack and flipping style, then hit <b>Find me flips</b>. GP Printer will pull live Grand Exchange prices and tell you exactly what to buy and where to sell.</p>
+      </div>
+
+      <div class="loader" id="loader" hidden>
+        <div class="loader__spinner" aria-hidden="true"></div>
+        <p class="loader__text" id="loader-text">Reading the Grand Exchange&hellip;</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>
+      Live data from the
+      <a href="https://prices.runescape.wiki/" target="_blank" rel="noopener noreferrer">OSRS Wiki Real-time Prices API</a>
+      &amp; the official
+      <a href="https://secure.runescape.com/m=itemdb_oldschool/" target="_blank" rel="noopener noreferrer">Grand Exchange Database</a>.
+      Profit figures account for the 2% GE sales tax (capped at 5m, exempt items handled).
+    </p>
+    <p class="footer__fine">Merchanting is a legitimate, intended way to make gp &mdash; see the <a href="https://oldschool.runescape.wiki/w/Merchanting" target="_blank" rel="noopener noreferrer">Merchanting wiki page</a>. Not affiliated with Jagex. RuneScape is a trademark of Jagex Ltd.</p>
+  </footer>
+
+  <!-- Item detail drawer -->
+  <div class="drawer" id="drawer" hidden>
+    <div class="drawer__scrim" data-close></div>
+    <aside class="drawer__panel panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <button class="drawer__close" data-close aria-label="Close">✕</button>
+      <div class="drawer__head">
+        <img class="drawer__icon" id="drawer-icon" alt="" width="48" height="48" />
+        <div>
+          <h3 class="drawer__title" id="drawer-title">&mdash;</h3>
+          <p class="drawer__examine" id="drawer-examine"></p>
+        </div>
+      </div>
+      <div class="drawer__chart" id="drawer-chart"></div>
+      <dl class="drawer__stats" id="drawer-stats"></dl>
+      <div class="drawer__instructions" id="drawer-instructions"></div>
+    </aside>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="assertive"></div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

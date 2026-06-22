@@ -53,6 +53,11 @@
 
 html { -webkit-text-size-adjust: 100%; }
 
+/* The `hidden` attribute must always win. Author rules that set `display`
+   (.modal, .summary, .results__bar) would otherwise defeat the UA
+   `[hidden]{display:none}` rule and leak hidden elements onto the page. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   min-height: 100vh;

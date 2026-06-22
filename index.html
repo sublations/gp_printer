@@ -97,7 +97,7 @@
           <label class="field">
             <span class="field__label">Min. daily volume</span>
             <input id="min-volume" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
-            <span class="field__hint">Lowest units traded / day. <code>auto</code> = per-style default.</span>
+            <span class="field__hint">Skip thinly-traded items. Higher = safer fills. <code>auto</code> = per-style default.</span>
           </label>
           <label class="field">
             <span class="field__label">Max. buy price (per item)</span>
@@ -108,6 +108,11 @@
             <span class="field__label">Min. profit margin</span>
             <input id="min-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
             <span class="field__hint">Lowest return after tax. e.g. <code>1.5%</code>.</span>
+          </label>
+          <label class="field">
+            <span class="field__label">Max. margin (sanity cap)</span>
+            <input id="max-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
+            <span class="field__hint">Reject too-good-to-be-true spreads (stale prints). e.g. <code>30%</code>.</span>
           </label>
           <label class="field">
             <span class="field__label">Spread across</span>

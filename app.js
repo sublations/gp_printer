@@ -58,6 +58,18 @@
   const MAPPING_TTL = 24 * 60 * 60 * 1000; // 1 day
   const FETCH_TIMEOUT = 15_000;
 
+  // --- Realism guards ---------------------------------------------------
+  // The live "instabuy/instasell" prices can be stale or manipulated single
+  // prints on thinly-traded items, producing fantasy margins like "buy 21,
+  // sell 5k". These keep the engine honest:
+  //   • OUTLIER_FACTOR — reject a price that sits more than Nx above (or 1/Nx
+  //     below) the recent average; that spread isn't real.
+  //   • MARKET_CAPTURE — the share of an item's *daily* volume you can
+  //     realistically buy AND offload in one ~4h cycle. Caps plan quantities
+  //     so a rarely-traded item can't pretend to move thousands of units.
+  const OUTLIER_FACTOR = 3;
+  const MARKET_CAPTURE = 0.10;
+
   /* ===================================================================== *
    *  STRATEGIES
    *  Each defines sensible defaults + a scoring function. The scorer ranks
@@ -69,12 +81,11 @@
       name: 'Short Term',
       blurb: 'High-volume staples that flip in minutes. Small margins, but you cycle your gold fast - ideal if you can babysit the offers.',
       horizon: 'Minutes–hours',
-      defaults: { minVolume: 10_000, minRoi: 0.005, maxAgeMin: 90 },
-      // Reward profit you can realistically realise per day: margin × the
-      // throughput the market + buy limit actually allow.
+      defaults: { minVolume: 10_000, minRoi: 0.005, maxRoi: 0.10, maxAgeMin: 60 },
+      // Reward realised profit per day = per-item margin × what you can
+      // actually flip per cycle × the number of cycles.
       score(m) {
-        const throughput = Math.min(m.limit * BUY_LIMIT_WINDOWS_PER_DAY, m.liquidity * 0.20);
-        return m.profit * throughput * (1 + m.roi);
+        return m.profit * m.realisticUnits * BUY_LIMIT_WINDOWS_PER_DAY * (1 + m.roi);
       },
     },
     long: {
@@ -82,11 +93,10 @@
       name: 'Long Term',
       blurb: 'Fat absolute margins on slower-moving, often pricier items. Park your gold, check back later. Fewer offers to manage.',
       horizon: 'Hours–days',
-      defaults: { minVolume: 60, minRoi: 0.02, maxAgeMin: 12 * 60 },
-      // Reward big per-item profit, lightly weighted by being tradeable at all.
+      defaults: { minVolume: 100, minRoi: 0.02, maxRoi: 0.25, maxAgeMin: 6 * 60 },
+      // Reward big per-item profit you can actually fill, weighted by margin.
       score(m) {
-        const fillable = Math.min(m.limit, Math.max(1, m.liquidity / BUY_LIMIT_WINDOWS_PER_DAY));
-        return m.profit * fillable * (1 + m.roi * 2);
+        return m.profit * Math.max(1, m.realisticUnits) * (1 + m.roi * 2);
       },
     },
     risky: {
@@ -94,10 +104,10 @@
       name: 'Risky',
       blurb: 'Wide spreads and volatile movers. The biggest % returns live here - and so does the chance a price snaps back before you sell.',
       horizon: 'Unpredictable',
-      defaults: { minVolume: 20, minRoi: 0.06, maxAgeMin: 12 * 60 },
-      // Reward ROITY and volatility; care less about steady liquidity.
+      defaults: { minVolume: 50, minRoi: 0.05, maxRoi: 0.60, maxAgeMin: 6 * 60 },
+      // Reward ROI and volatility, but still require it to be tradeable.
       score(m) {
-        return m.roi * (1 + m.volatility * 3) * Math.log10(10 + m.liquidity) * Math.sqrt(m.profit);
+        return m.roi * (1 + m.volatility * 3) * Math.sqrt(m.profit * Math.max(1, m.realisticUnits));
       },
     },
     balanced: {
@@ -105,10 +115,9 @@
       name: 'Balanced',
       blurb: 'A safe all-rounder: healthy volume, decent margin, fresh prices. The default if you just want solid, low-drama flips.',
       horizon: 'Hours',
-      defaults: { minVolume: 2_000, minRoi: 0.015, maxAgeMin: 3 * 60 },
+      defaults: { minVolume: 2_000, minRoi: 0.015, maxRoi: 0.15, maxAgeMin: 3 * 60 },
       score(m) {
-        const throughput = Math.min(m.limit * BUY_LIMIT_WINDOWS_PER_DAY, m.liquidity * 0.10);
-        return m.profit * throughput * (1 + m.roi * 1.5);
+        return m.profit * m.realisticUnits * BUY_LIMIT_WINDOWS_PER_DAY * (1 + m.roi * 1.5);
       },
     },
   };
@@ -120,7 +129,7 @@
     stack: 10_000_000,
     strategy: 'short',
     account: 'members',
-    filters: { minVolume: 'auto', maxPrice: 'none', minRoi: 'auto', diversify: 8 },
+    filters: { minVolume: 'auto', maxPrice: 'none', minRoi: 'auto', maxRoi: 'auto', diversify: 8 },
     autoRefresh: false,
     // data
     mapping: null,      // Map<id, meta>
@@ -298,6 +307,22 @@
     const sell = latest.high; // you offload near the instabuy (high) price
     if (buy <= 0 || sell <= 0) return null;
 
+    // Both sides must have actually traded, and BOTH must be recent: a flip
+    // needs a live buy price AND a live sell price. Using the *older* of the
+    // two timestamps means a dead sell-side print can't ride in on a fresh
+    // buy-side one (the "buy 21, sell 5k" oak-shield bug).
+    const tHigh = latest.highTime || 0;
+    const tLow = latest.lowTime || 0;
+    if (!tHigh || !tLow) return null;
+    const ageMin = (nowSec - Math.min(tHigh, tLow)) / 60;
+
+    // Outlier guard: reject prices that sit far outside the recent average.
+    // Prefer the 1h average, fall back to 24h.
+    const avgHigh = (h1 && h1.avgHighPrice) || (h24 && h24.avgHighPrice) || 0;
+    const avgLow = (h1 && h1.avgLowPrice) || (h24 && h24.avgLowPrice) || 0;
+    if (avgHigh && sell > avgHigh * OUTLIER_FACTOR) return null;  // inflated sell print
+    if (avgLow && buy < avgLow / OUTLIER_FACTOR) return null;     // crashed buy print
+
     const tax = taxOf(sell, meta.id);
     const profit = sell - buy - tax;
     if (profit <= 0) return null;
@@ -306,22 +331,23 @@
     // Liquidity = units realistically tradeable on BOTH sides over 24h.
     const dHigh = (h24 && h24.highPriceVolume) || 0;
     const dLow = (h24 && h24.lowPriceVolume) || 0;
-    const liquidity = Math.min(dHigh, dLow);     // bottleneck side
+    const liquidity = Math.min(dHigh, dLow);     // bottleneck (thinner) side
     const dailyTotal = dHigh + dLow;
 
-    // Freshness - minutes since the most recent trade we have a price for.
-    const lastTrade = Math.max(latest.highTime || 0, latest.lowTime || 0);
-    const ageMin = lastTrade ? (nowSec - lastTrade) / 60 : Infinity;
+    const limit = meta.limit && meta.limit > 0 ? meta.limit : 100; // fallback when API has no limit
 
-    // Volatility - how far the live mid has drifted from the 1h average mid.
+    // How many you can realistically buy AND offload in one cycle: capped by
+    // the buy limit and by your share of the day's volume. A rarely-traded
+    // item lands near zero here and simply can't carry a big plan.
+    const realisticUnits = Math.min(limit, Math.floor(liquidity * MARKET_CAPTURE));
+
+    // Volatility - how far the live mid has drifted from the average mid.
     let volatility = 0;
-    if (h1 && h1.avgHighPrice && h1.avgLowPrice) {
+    if (avgHigh && avgLow) {
       const liveMid = (sell + buy) / 2;
-      const avgMid = (h1.avgHighPrice + h1.avgLowPrice) / 2;
+      const avgMid = (avgHigh + avgLow) / 2;
       if (avgMid > 0) volatility = Math.abs(liveMid - avgMid) / avgMid;
     }
-
-    const limit = meta.limit && meta.limit > 0 ? meta.limit : 100; // fallback when API has no limit
 
     return {
       id: meta.id,
@@ -334,6 +360,7 @@
       buy, sell, tax, profit, roi,
       liquidity,
       dailyTotal,
+      realisticUnits,
       ageMin,
       volatility,
     };
@@ -351,11 +378,13 @@
     const autoVol = Math.round(d.minVolume * acctVolFactor);
     const minVolume = f.minVolume === 'auto' || f.minVolume === '' ? autoVol : parseGp(f.minVolume);
     const minRoi = f.minRoi === 'auto' || f.minRoi === '' ? d.minRoi : parsePct(f.minRoi);
+    const maxRoi = f.maxRoi === 'auto' || f.maxRoi === '' || f.maxRoi == null ? d.maxRoi : parsePct(f.maxRoi);
     const maxPrice = f.maxPrice === 'none' || f.maxPrice === '' ? Infinity : parseGp(f.maxPrice);
 
     return {
       minVolume: isFinite(minVolume) ? minVolume : autoVol,
       minRoi: isFinite(minRoi) ? minRoi : d.minRoi,
+      maxRoi: isFinite(maxRoi) ? maxRoi : d.maxRoi,
       maxPrice: isFinite(maxPrice) ? maxPrice : Infinity,
       maxAgeMin: d.maxAgeMin,
     };
@@ -376,7 +405,9 @@
       if (!wantMembers && m.members) continue;            // F2P filter
       if (m.buy > f.maxPrice) continue;                   // single-item price cap
       if (m.liquidity < f.minVolume) continue;            // liquidity floor
+      if (m.realisticUnits < 1) continue;                 // can't move even 1/cycle
       if (m.roi < f.minRoi) continue;                     // margin floor
+      if (m.roi > f.maxRoi) continue;                     // sanity ceiling (artifact guard)
       if (m.ageMin > f.maxAgeMin) continue;               // stale-price guard
       m.score = strat.score(m);
       if (!isFinite(m.score) || m.score <= 0) continue;
@@ -400,12 +431,18 @@
       if (remaining < m.buy) continue; // can't afford even one
 
       const affordable = Math.floor(remaining / m.buy);
-      const qty = Math.min(m.limit, affordable);
+      // Quantity is the lesser of what you can afford and what the market can
+      // realistically absorb this cycle (already buy-limit + volume capped).
+      const qty = Math.min(m.realisticUnits, affordable);
       if (qty < 1) continue;
+
+      const capReason = qty < m.realisticUnits
+        ? 'your coin stack'
+        : (m.realisticUnits === m.limit ? 'the 4h buy limit' : 'realistic daily volume');
 
       const outlay = qty * m.buy;
       const profit = qty * m.profit;
-      plan.push({ ...m, qty, outlay, planProfit: profit });
+      plan.push({ ...m, qty, outlay, planProfit: profit, capReason });
       remaining -= outlay;
 
       if (remaining < 1_000) break; // effectively spent
@@ -496,6 +533,7 @@
         minVolume: $('#min-volume'),
         maxPrice: $('#max-price'),
         minRoi: $('#min-roi'),
+        maxRoi: $('#max-roi'),
         diversify: $('#diversify'),
         autoRefresh: $('#auto-refresh'),
         calcBtn: $('#calc-btn'),
@@ -657,7 +695,7 @@
         nameCell,
         el('td', { class: 'col-num' }, this.coin(r.buy)),
         el('td', { class: 'col-num' }, this.coin(r.sell)),
-        el('td', { class: 'col-num', title: `Buy limit: ${Fmt.full(r.limit)} / 4h` }, Fmt.full(r.qty)),
+        el('td', { class: 'col-num', title: `Capped by ${r.capReason} · buy limit ${Fmt.full(r.limit)}/4h · ~${Fmt.full(r.liquidity)} traded/day` }, Fmt.full(r.qty)),
         el('td', { class: 'col-num' }, this.coin(r.outlay)),
         el('td', { class: 'col-num' }, this.coin(r.planProfit, 'gp--profit')),
         el('td', { class: `col-num ${roiClass}` }, Fmt.pct(r.roi)),
@@ -858,6 +896,7 @@
     bindFilter(dom.minVolume, 'minVolume');
     bindFilter(dom.maxPrice, 'maxPrice');
     bindFilter(dom.minRoi, 'minRoi');
+    bindFilter(dom.maxRoi, 'maxRoi');
     bindFilter(dom.diversify, 'diversify');
 
     // Auto-refresh
@@ -971,6 +1010,7 @@
       dom.minVolume.value = state.filters.minVolume;
       dom.maxPrice.value = state.filters.maxPrice;
       dom.minRoi.value = state.filters.minRoi;
+      dom.maxRoi.value = state.filters.maxRoi;
       dom.diversify.value = state.filters.diversify;
     }
     if (typeof s.autoRefresh === 'boolean') { state.autoRefresh = s.autoRefresh; dom.autoRefresh.checked = s.autoRefresh; }

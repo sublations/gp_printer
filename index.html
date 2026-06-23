@@ -67,25 +67,8 @@
 
           <div class="field">
             <span class="field__label" id="strategy-label">Flipping style</span>
-            <div class="strategy-tabs" id="strategy-tabs" role="radiogroup" aria-labelledby="strategy-label">
-              <button type="button" class="strategy-tab" role="radio" data-strategy="short" aria-checked="true">
-                <span class="strategy-tab__name">Short&nbsp;Term</span>
-                <span class="strategy-tab__sub">High volume &middot; fast</span>
-              </button>
-              <button type="button" class="strategy-tab" role="radio" data-strategy="long" aria-checked="false">
-                <span class="strategy-tab__name">Long&nbsp;Term</span>
-                <span class="strategy-tab__sub">Big margins &middot; patient</span>
-              </button>
-              <button type="button" class="strategy-tab" role="radio" data-strategy="risky" aria-checked="false">
-                <span class="strategy-tab__name">Risky</span>
-                <span class="strategy-tab__sub">Volatile &middot; high ROI</span>
-              </button>
-              <button type="button" class="strategy-tab" role="radio" data-strategy="balanced" aria-checked="false">
-                <span class="strategy-tab__name">Balanced</span>
-                <span class="strategy-tab__sub">Safe all-rounder</span>
-              </button>
-            </div>
-            <p class="field__hint" id="strategy-blurb"></p>
+            <!-- Preset buttons are generated from STRATEGIES in app.js. -->
+            <div class="preset-list" id="strategy-tabs" role="radiogroup" aria-labelledby="strategy-label"></div>
           </div>
 
           <div class="field field--inline">
@@ -120,6 +103,11 @@
                 <span class="field__label">Max. margin (sanity cap)</span>
                 <input id="max-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
                 <span class="field__hint">Reject too-good-to-be-true spreads (stale prints). e.g. <code>30%</code>.</span>
+              </label>
+              <label class="field">
+                <span class="field__label">Max. price swing</span>
+                <input id="max-vol" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
+                <span class="field__hint">Consistency filter: skip items whose price strays far from its average. e.g. <code>4%</code>.</span>
               </label>
               <label class="field">
                 <span class="field__label">Spread across</span>
@@ -222,12 +210,12 @@
           <table class="flip-table explore-table">
             <thead>
               <tr>
-                <th class="col-item" scope="col">Item</th>
-                <th class="col-num" scope="col">Buy</th>
-                <th class="col-num" scope="col">Sell</th>
-                <th class="col-num" scope="col">Margin</th>
-                <th class="col-num" scope="col" title="Live mid vs. the 24-hour average">Vs avg</th>
-                <th class="col-num col-vol" scope="col">Vol / day</th>
+                <th class="col-item" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="name">Item</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="buy">Buy</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="sell">Sell</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="margin">Margin</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="change" title="Live mid vs. the 24-hour average">Vs avg</button></th>
+                <th class="col-num col-vol" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="vol">Vol / day</button></th>
               </tr>
             </thead>
             <tbody id="search-rows"></tbody>
@@ -282,13 +270,13 @@
           <table class="flip-table journal-table">
             <thead>
               <tr>
-                <th class="col-item" scope="col">Item</th>
-                <th scope="col">Status</th>
-                <th class="col-num" scope="col">Qty</th>
-                <th class="col-num" scope="col">Buy</th>
-                <th class="col-num" scope="col">Sell</th>
-                <th class="col-num" scope="col">Profit</th>
-                <th class="col-num col-date" scope="col">Committed</th>
+                <th class="col-item" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="name">Item</button></th>
+                <th scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="status">Status</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="qty">Qty</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="buy">Buy</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="sell">Sell</button></th>
+                <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="profit">Profit</button></th>
+                <th class="col-num col-date" scope="col" aria-sort="descending"><button type="button" class="th-sort" data-sort="committed">Committed</button></th>
                 <th class="col-actions" scope="col"><span class="sr-only">Actions</span></th>
               </tr>
             </thead>

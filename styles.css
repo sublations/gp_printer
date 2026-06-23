@@ -109,7 +109,7 @@ a:hover { text-decoration: underline; }
 
 /* One consistent, high-contrast keyboard focus ring across every control.
    (Inputs keep their own gold box-shadow ring defined below.) */
-.strategy-tab:focus-visible,
+.preset:focus-visible,
 .toggle:focus-visible,
 .btn:focus-visible,
 .advanced summary:focus-visible,
@@ -308,17 +308,13 @@ code { font-family: var(--font-ui); background: rgba(0,0,0,0.35); padding: 0 4px
   pointer-events: none;
 }
 
-/* Strategy tabs */
-.strategy-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.strategy-tab {
+/* Strategy presets — a readable vertical list, each with its own description. */
+.preset-list { display: flex; flex-direction: column; gap: 7px; }
+.preset {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 9px 8px;
+  padding: 9px 11px;
   text-align: left;
   cursor: pointer;
   color: var(--ink-dim);
@@ -329,20 +325,27 @@ code { font-family: var(--font-ui); background: rgba(0,0,0,0.35); padding: 0 4px
   font-family: var(--font-ui);
   transition: filter 0.1s ease;
 }
-.strategy-tab:hover { filter: brightness(1.15); }
-.strategy-tab__name { font-size: 19px; color: var(--gold-soft); text-shadow: 1px 1px 0 #000; }
-/* Brighter than --ink-faint because the selected tab's gradient is lighter. */
-.strategy-tab__sub { font-size: 14px; color: #d6c79a; }
-.strategy-tab[aria-checked="true"] {
+.preset:hover { filter: brightness(1.13); }
+.preset__name {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 20px;
+  color: var(--gold-soft);
+  text-shadow: 1px 1px 0 #000;
+}
+.preset__horizon { font-size: 13px; color: var(--ink-faint); font-weight: 400; }
+.preset__desc { font-size: 14px; line-height: 1.3; color: #cdbd92; }
+.preset[aria-checked="true"] {
   background: linear-gradient(180deg, #6a5a37, #4c3f24);
   box-shadow:
     inset 0 0 0 1px var(--gold),
     inset 1px 1px 0 rgba(255, 220, 130, 0.5),
     0 0 10px rgba(255, 176, 0, 0.3);
 }
-.strategy-tab[aria-checked="true"] .strategy-tab__name { color: var(--gold-bright); }
-
-#strategy-blurb { min-height: 1.4em; }
+.preset[aria-checked="true"] .preset__name { color: var(--gold-bright); }
+.preset[aria-checked="true"] .preset__desc { color: #e3d3a4; }
 
 /* Toggle group (account type) */
 .toggle-group { display: inline-flex; gap: 6px; }
@@ -830,12 +833,8 @@ th[aria-sort="descending"] .th-sort::after { content: " ▾"; color: var(--gold)
 }
 .btn--danger:hover { filter: brightness(1.15); }
 
-/* Journal & explore tables have plain headers (no .th-sort button), so restore
-   the padding that .flip-table th drops for the sort-button layout. */
-.journal-table thead th,
-.explore-table thead th { padding: 9px 12px; }
-.journal-table thead th.col-item,
-.explore-table thead th.col-item { text-align: left; }
+/* Journal & explore tables now use .th-sort buttons in their headers (like the
+   flip table), so .flip-table's padding:0 + .th-sort padding handle layout. */
 .journal-table tbody tr { cursor: default; }
 .journal-table tbody tr:hover td { background: rgba(255, 176, 0, 0.06); }
 .journal-table td { vertical-align: middle; }

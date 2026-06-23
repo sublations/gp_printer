@@ -95,22 +95,42 @@
     short: {
       id: 'short',
       name: 'Short Term',
-      blurb: 'High-volume staples that flip in minutes. Small margins, but you cycle your gold fast - ideal if you can babysit the offers.',
+      desc: 'High-volume staples that flip in minutes. Small margins, fast turnover — babysit the offers.',
       horizon: 'Minutes–hours',
-      defaults: { minVolume: 10_000, minRoi: 0.005, maxRoi: 0.10, maxAgeMin: 60 },
-      // Reward realised profit per day = per-item margin × what you can
-      // actually flip per cycle × the number of cycles.
+      defaults: { minVolume: 10_000, minRoi: 0.005, maxRoi: 0.10, maxAgeMin: 60, maxVolatility: Infinity },
+      // Realised profit per day = per-item margin × what you can flip per cycle × cycles.
       score(m) {
         return m.profit * m.realisticUnits * BUY_LIMIT_WINDOWS_PER_DAY * (1 + m.roi);
+      },
+    },
+    bulk: {
+      id: 'bulk',
+      name: 'Bulk',
+      desc: 'Trade by the thousand — massive volume, steady prices, thin but reliable margins. Low drama.',
+      horizon: 'Minutes',
+      defaults: { minVolume: 60_000, minRoi: 0.003, maxRoi: 0.06, maxAgeMin: 45, maxVolatility: 0.04 },
+      // Throughput-dominant, rewarding consistency: penalise price swing so you
+      // get steady, repeatable fills rather than one-off spikes.
+      score(m) {
+        return (m.profit * m.realisticUnits * BUY_LIMIT_WINDOWS_PER_DAY) / (1 + m.volatility * 25);
+      },
+    },
+    balanced: {
+      id: 'balanced',
+      name: 'Balanced',
+      desc: 'A safe all-rounder: healthy volume, decent margin, fresh prices. The default if unsure.',
+      horizon: 'Hours',
+      defaults: { minVolume: 2_000, minRoi: 0.015, maxRoi: 0.15, maxAgeMin: 3 * 60, maxVolatility: Infinity },
+      score(m) {
+        return m.profit * m.realisticUnits * BUY_LIMIT_WINDOWS_PER_DAY * (1 + m.roi * 1.5);
       },
     },
     long: {
       id: 'long',
       name: 'Long Term',
-      blurb: 'Fat absolute margins on slower-moving, often pricier items. Park your gold, check back later. Fewer offers to manage.',
+      desc: 'Fat margins on slower, pricier items. Park your gp and check back later — fewer offers to manage.',
       horizon: 'Hours–days',
-      defaults: { minVolume: 100, minRoi: 0.02, maxRoi: 0.25, maxAgeMin: 6 * 60 },
-      // Reward big per-item profit you can actually fill, weighted by margin.
+      defaults: { minVolume: 100, minRoi: 0.02, maxRoi: 0.25, maxAgeMin: 6 * 60, maxVolatility: Infinity },
       score(m) {
         return m.profit * Math.max(1, m.realisticUnits) * (1 + m.roi * 2);
       },
@@ -118,25 +138,15 @@
     risky: {
       id: 'risky',
       name: 'Risky',
-      blurb: 'Wide spreads and volatile movers. The biggest % returns live here - and so does the chance a price snaps back before you sell.',
+      desc: 'Wide spreads and volatile movers — the biggest % returns, and the biggest chance of a snap-back.',
       horizon: 'Unpredictable',
-      defaults: { minVolume: 50, minRoi: 0.05, maxRoi: 0.60, maxAgeMin: 6 * 60 },
-      // Reward ROI and volatility, but still require it to be tradeable.
+      defaults: { minVolume: 50, minRoi: 0.05, maxRoi: 0.60, maxAgeMin: 6 * 60, maxVolatility: Infinity },
       score(m) {
         return m.roi * (1 + m.volatility * 3) * Math.sqrt(m.profit * Math.max(1, m.realisticUnits));
       },
     },
-    balanced: {
-      id: 'balanced',
-      name: 'Balanced',
-      blurb: 'A safe all-rounder: healthy volume, decent margin, fresh prices. The default if you just want solid, low-drama flips.',
-      horizon: 'Hours',
-      defaults: { minVolume: 2_000, minRoi: 0.015, maxRoi: 0.15, maxAgeMin: 3 * 60 },
-      score(m) {
-        return m.profit * m.realisticUnits * BUY_LIMIT_WINDOWS_PER_DAY * (1 + m.roi * 1.5);
-      },
-    },
   };
+  const STRATEGY_ORDER = ['short', 'bulk', 'balanced', 'long', 'risky'];
 
   /* ===================================================================== *
    *  STATE
@@ -145,7 +155,7 @@
     stack: 10_000_000,
     strategy: 'short',
     account: 'members',
-    filters: { minVolume: 'auto', maxPrice: 'none', minRoi: 'auto', maxRoi: 'auto', diversify: 8 },
+    filters: { minVolume: 'auto', maxPrice: 'none', minRoi: 'auto', maxRoi: 'auto', maxVol: 'auto', diversify: 8 },
     autoRefresh: false,
     view: 'flipper',          // flipper | explore | journal
     exploreMode: 'traded',    // traded | risers | fallers | margin
@@ -294,6 +304,43 @@
     };
   }
 
+  /**
+   * Warms item-icon images so result rows render fully-iconed instead of
+   * popping in. Browsers cache by URL, so once an id is preloaded any <img>
+   * with that src paints instantly. preload() resolves when every requested
+   * icon is ready, or after a timeout (so a slow image never blocks the UI).
+   */
+  const IconCache = {
+    ready: new Set(),
+    _one(id) {
+      return new Promise((resolve) => {
+        if (this.ready.has(id)) return resolve();
+        const img = new Image();
+        const ok = () => { this.ready.add(id); resolve(); };
+        img.onload = ok;
+        img.onerror = () => {
+          // Warm the wiki fallback too, so it doesn't pop in at render time.
+          const meta = state.mapping && state.mapping.get(id);
+          if (meta && meta.icon) {
+            const f = new Image();
+            f.onload = ok;
+            f.onerror = ok;
+            f.src = WIKI_FILE + encodeURIComponent(meta.icon.replace(/ /g, '_'));
+          } else ok();
+        };
+        img.src = GE_SPRITE + id;
+      });
+    },
+    preload(ids, timeout = 2500) {
+      const todo = [...new Set(ids)].filter((id) => !this.ready.has(id));
+      if (!todo.length) return Promise.resolve();
+      return Promise.race([
+        Promise.all(todo.map((id) => this._one(id))),
+        new Promise((r) => setTimeout(r, timeout)),
+      ]);
+    },
+  };
+
   /* ===================================================================== *
    *  STORAGE
    * ===================================================================== */
@@ -432,12 +479,14 @@
     const minRoi = f.minRoi === 'auto' || f.minRoi === '' ? d.minRoi : parsePct(f.minRoi);
     const maxRoi = f.maxRoi === 'auto' || f.maxRoi === '' || f.maxRoi == null ? d.maxRoi : parsePct(f.maxRoi);
     const maxPrice = f.maxPrice === 'none' || f.maxPrice === '' ? Infinity : parseGp(f.maxPrice);
+    const maxVol = f.maxVol === 'auto' || f.maxVol === '' || f.maxVol == null ? d.maxVolatility : parsePct(f.maxVol);
 
     return {
       minVolume: isFinite(minVolume) ? minVolume : autoVol,
       minRoi: isFinite(minRoi) ? minRoi : d.minRoi,
       maxRoi: isFinite(maxRoi) ? maxRoi : d.maxRoi,
       maxPrice: isFinite(maxPrice) ? maxPrice : Infinity,
+      maxVolatility: isFinite(maxVol) ? maxVol : d.maxVolatility,
       maxAgeMin: d.maxAgeMin,
     };
   }
@@ -460,6 +509,7 @@
       if (m.realisticUnits < 1) continue;                 // can't move even 1/cycle
       if (m.roi < f.minRoi) continue;                     // margin floor
       if (m.roi > f.maxRoi) continue;                     // sanity ceiling (artifact guard)
+      if (m.volatility > f.maxVolatility) continue;       // consistency cap (Bulk)
       if (m.ageMin > f.maxAgeMin) continue;               // stale-price guard
       m.score = strat.score(m);
       if (!isFinite(m.score) || m.score <= 0) continue;
@@ -648,12 +698,12 @@
         stackInput: $('#stack-input'),
         stackParsed: $('#stack-parsed'),
         strategyTabs: $('#strategy-tabs'),
-        strategyBlurb: $('#strategy-blurb'),
         accountToggle: $('#account-toggle'),
         minVolume: $('#min-volume'),
         maxPrice: $('#max-price'),
         minRoi: $('#min-roi'),
         maxRoi: $('#max-roi'),
+        maxVol: $('#max-vol'),
         diversify: $('#diversify'),
         autoRefresh: $('#auto-refresh'),
         calcBtn: $('#calc-btn'),
@@ -687,11 +737,14 @@
       requestAnimationFrame(() => { dom.srStatus.textContent = text; });
     },
 
+    _resultsToken: 0,
+
     setBusy(busy) {
       dom.calcBtn.disabled = busy;
       dom.calcBtn.querySelector('.btn__label').textContent = busy ? 'Crunching…' : 'Find me flips';
       dom.loader.hidden = !busy;
       if (busy) {
+        this._resultsToken++; // invalidate any in-flight plan paint from a prior run
         this.announce('Reading the Grand Exchange…');
         dom.placeholder.hidden = true;
         // keep prior results visible underneath the loader? hide for clarity
@@ -766,9 +819,13 @@
         `${plan.length} item${plan.length > 1 ? 's' : ''} &middot; ${Fmt.pct(utilised, 0)} of your stack deployed &middot; ` +
         `tap a row for the trade plan & price history`;
 
-      // --- Table ---
-      this.renderTable();
-      dom.tableWrap.hidden = false;
+      // --- Table (warm icons first so the plan paints fully-iconed) ---
+      const token = this._resultsToken; // set by setBusy(true) at the start of this run
+      IconCache.preload(plan.map((r) => r.id)).then(() => {
+        if (token !== this._resultsToken) return; // a newer run superseded this
+        this.renderTable();
+        dom.tableWrap.hidden = false;
+      });
     },
 
     renderTable() {
@@ -831,6 +888,38 @@
       case 'vol24': return r.liquidity;
       default: return r.planProfit;
     }
+  }
+
+  /* --- Generic, reusable table sorting (Explore + Journal) --- */
+  /** Stable-ish sort by key+dir using `valueOf(row,key)`; missing → null sort. */
+  function applySort(rows, sort, valueOf) {
+    if (!sort || !sort.key) return rows;
+    const { key, dir } = sort;
+    return [...rows].sort((a, b) => {
+      const av = valueOf(a, key), bv = valueOf(b, key);
+      if (typeof av === 'string' && typeof bv === 'string') {
+        return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      const an = av == null ? -Infinity : av;
+      const bn = bv == null ? -Infinity : bv;
+      return dir === 'asc' ? an - bn : bn - an;
+    });
+  }
+
+  /** Reflect the active sort on a thead's column headers via aria-sort. */
+  function setSortIndicators(theadEl, sort) {
+    $$('th', theadEl).forEach((th) => {
+      const btn = $('.th-sort', th);
+      if (!btn) return;
+      th.setAttribute('aria-sort', sort && sort.key === btn.dataset.sort
+        ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+    });
+  }
+
+  /** Next sort state when a header is clicked (text → asc first, numbers → desc). */
+  function nextSort(cur, key, textKeys) {
+    if (cur && cur.key === key) return { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' };
+    return { key, dir: (textKeys || []).includes(key) ? 'asc' : 'desc' };
   }
 
   /* ===================================================================== *
@@ -1241,14 +1330,36 @@
       )));
   }
 
+  /** Sort accessor for the journal table columns. */
+  function journalSortVal(e, key) {
+    const ec = entryEconomics(e);
+    switch (key) {
+      case 'name': return e.itemName;
+      case 'status': return e.status;
+      case 'qty': return ec.qty;
+      case 'buy': return ec.buy;
+      case 'sell': return ec.sell;
+      case 'profit': return e.status === 'cancelled' ? -Infinity : ec.profit;
+      case 'committed': return e.committedAt;
+      default: return e.committedAt;
+    }
+  }
+
   const JournalUI = {
     filter: 'all',
+    sort: { key: 'committed', dir: 'desc' },
+    _token: 0,
 
     init() {
       const s = Store.get(CACHE.settings) || {};
       this.filter = ['all', 'open', 'done', 'cancelled'].includes(s.journalFilter) ? s.journalFilter : 'all';
       this.applyFilterButtons();
       this.render();
+    },
+
+    setSort(key) {
+      this.sort = nextSort(this.sort, key, ['name', 'status']);
+      this.renderTable();
     },
 
     applyFilterButtons() {
@@ -1317,7 +1428,7 @@
     },
 
     renderTable() {
-      const rows = Journal.list(this.filter);
+      const token = ++this._token; // bump first so every path invalidates in-flight paints
       const wrap = $('#journal-table-wrap');
       const empty = $('#journal-empty');
       if (!Journal.entries.length) {
@@ -1325,12 +1436,19 @@
         return;
       }
       empty.hidden = true; wrap.hidden = false;
+      const rows = applySort(Journal.list(this.filter), this.sort, journalSortVal);
       if (!rows.length) {
+        setSortIndicators(wrap.querySelector('thead'), this.sort);
         $('#journal-body-rows').replaceChildren(
           el('tr', {}, el('td', { class: 'journal-nomatch', colspan: '8' }, `No ${this.filter} flips.`)));
         return;
       }
-      $('#journal-body-rows').replaceChildren(...rows.map((e) => this.row(e)));
+      // Paint header + body together once icons are warm (avoids thead/tbody mismatch).
+      IconCache.preload(rows.map((e) => e.itemId)).then(() => {
+        if (token !== this._token) return;
+        setSortIndicators(wrap.querySelector('thead'), this.sort);
+        $('#journal-body-rows').replaceChildren(...rows.map((e) => this.row(e)));
+      });
     },
 
     row(e) {
@@ -1531,9 +1649,24 @@
     },
   };
 
+  /** Sort accessor for the explore table columns. */
+  function exploreSortVal(s, key) {
+    switch (key) {
+      case 'name': return s.name;
+      case 'buy': return s.buy;
+      case 'sell': return s.sell;
+      case 'margin': return s.profit;
+      case 'change': return s.change24;
+      case 'vol': return s.liquidity;
+      default: return s.liquidity;
+    }
+  }
+
   const Explore = {
     query: '',
     loaded: false,
+    sort: { key: null, dir: 'desc' }, // null → use the browse mode's natural order
+    _token: 0,
 
     async onEnter() {
       // Explore can be the first thing a user opens, and prices go stale — so
@@ -1558,6 +1691,7 @@
     setMode(mode) {
       if (!EXPLORE_MODES[mode]) return;
       state.exploreMode = mode;
+      this.sort = { key: null, dir: 'desc' }; // a mode implies its own ordering
       $$('#explore-modes [role="radio"]').forEach((b) => {
         const on = b.dataset.mode === mode;
         b.setAttribute('aria-checked', String(on));
@@ -1574,12 +1708,17 @@
       else if (state.view === 'explore') this.onEnter(); // recover from a failed load
     },
 
+    setSort(key) {
+      this.sort = nextSort(this.sort.key ? this.sort : null, key, ['name']);
+      if (this.loaded) this.render();
+    },
+
     /** Build the current result list: search results, or a browse mode. */
     results() {
       if (!state.mapping) return [];
       const nowSec = Math.floor((state.pricesAt || Date.now()) / 1000);
       const wantMembers = state.account === 'members';
-      const out = [];
+      let out = [];
 
       if (this.query) {
         const q = this.query;
@@ -1591,7 +1730,9 @@
           s._rank = name === q ? 0 : name.startsWith(q) ? 1 : 2;
           out.push(s);
         }
-        out.sort((a, b) => a._rank - b._rank || b.dailyTotal - a.dailyTotal);
+        // Explicit column sort wins; otherwise rank by search relevance.
+        if (this.sort.key) out = applySort(out, this.sort, exploreSortVal);
+        else out.sort((a, b) => a._rank - b._rank || b.dailyTotal - a.dailyTotal);
         return out.slice(0, EXPLORE_LIMIT);
       }
 
@@ -1602,17 +1743,20 @@
         if (!s.hasPrices || !mode.ok(s)) continue;
         out.push(s);
       }
-      out.sort(mode.sort);
+      // Explicit column sort wins; otherwise use the mode's natural order.
+      if (this.sort.key) out = applySort(out, this.sort, exploreSortVal);
+      else out.sort(mode.sort);
       return out.slice(0, EXPLORE_LIMIT);
     },
 
     render() {
       if (!this.loaded) return;
-      const hint = $('#explore-hint');
+      const token = ++this._token; // bump first so an empty render also cancels in-flight paints
       const rows = this.results();
-      $$('#explore-modes [role="radio"]').forEach((b) => b.style.opacity = this.query ? '0.45' : '');
-      hint.textContent = this.query
-        ? `${rows.length}${rows.length === EXPLORE_LIMIT ? '+' : ''} item${rows.length === 1 ? '' : 's'} matching “${this.query}”.`
+      const countText = `${rows.length}${rows.length === EXPLORE_LIMIT ? '+' : ''} item${rows.length === 1 ? '' : 's'}`;
+      $$('#explore-modes [role="radio"]').forEach((b) => { b.style.opacity = this.query ? '0.45' : ''; });
+      $('#explore-hint').textContent = this.query
+        ? `${countText} matching “${this.query}”.`
         : (EXPLORE_MODES[state.exploreMode] || EXPLORE_MODES.traded).hint;
 
       const wrap = $('#search-wrap');
@@ -1625,9 +1769,14 @@
         UI.announce(this.query ? `No items match ${this.query}.` : 'No items to show.');
         return;
       }
-      empty.hidden = true; wrap.hidden = false;
-      $('#search-rows').replaceChildren(...rows.map((s) => this.row(s)));
-      UI.announce(`${rows.length}${rows.length === EXPLORE_LIMIT ? '+' : ''} item${rows.length === 1 ? '' : 's'} shown.`);
+      // Warm every row's icon before painting, so results appear fully-rendered.
+      IconCache.preload(rows.map((s) => s.id)).then(() => {
+        if (token !== this._token) return; // a newer search/sort superseded this
+        empty.hidden = true; wrap.hidden = false;
+        setSortIndicators(wrap.querySelector('thead'), this.sort.key ? this.sort : null);
+        $('#search-rows').replaceChildren(...rows.map((s) => this.row(s)));
+        UI.announce(`${countText} shown.`);
+      });
     },
 
     row(s) {
@@ -1688,6 +1837,7 @@
     bindFilter(dom.maxPrice, 'maxPrice');
     bindFilter(dom.minRoi, 'minRoi');
     bindFilter(dom.maxRoi, 'maxRoi');
+    bindFilter(dom.maxVol, 'maxVol');
     bindFilter(dom.diversify, 'diversify');
 
     // Auto-refresh
@@ -1749,7 +1899,7 @@
       View.go(tabs[n].dataset.view);
     });
 
-    // Explore: search box (debounced) + browse modes.
+    // Explore: search box (debounced) + browse modes + sortable headers.
     $('#search-input').addEventListener('input', debounce((e) => Explore.setQuery(e.target.value), 160));
     const modes = $('#explore-modes');
     modes.addEventListener('click', (e) => {
@@ -1757,6 +1907,10 @@
       if (b) Explore.setMode(b.dataset.mode);
     });
     wireRadioKeys(modes, (b) => Explore.setMode(b.dataset.mode));
+    $('#search-wrap').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-sort]');
+      if (btn) Explore.setSort(btn.dataset.sort);
+    });
 
     // Drawer chart range selector.
     const chartCtl = $('#drawer-chart-controls');
@@ -1773,6 +1927,12 @@
       if (b) JournalUI.setFilter(b.dataset.filter);
     });
     wireRadioKeys(filters, (b) => JournalUI.setFilter(b.dataset.filter));
+
+    // Journal: sortable headers.
+    $('#journal-table-wrap').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-sort]');
+      if (btn) JournalUI.setSort(btn.dataset.sort);
+    });
 
     // Journal: row actions (delegated).
     $('#journal-body-rows').addEventListener('click', (e) => {
@@ -1865,11 +2025,20 @@
     if (state.lastUpdated) analyse();
   }
 
+  /** Build the preset radiogroup from STRATEGIES (single source of truth). */
+  function buildPresetList() {
+    dom.strategyTabs.replaceChildren(...STRATEGY_ORDER.map((id) => {
+      const s = STRATEGIES[id];
+      return el('button', { type: 'button', class: 'preset', role: 'radio', 'aria-checked': 'false', tabindex: '-1', dataset: { strategy: id } },
+        el('span', { class: 'preset__name' }, s.name, el('span', { class: 'preset__horizon' }, s.horizon)),
+        el('span', { class: 'preset__desc' }, s.desc));
+    }));
+  }
+
   function selectStrategy(id) {
-    if (!STRATEGIES[id]) return;
+    if (!STRATEGIES[id]) id = STRATEGY_ORDER[0]; // coerce unknown/stale ids to a valid default
     state.strategy = id;
     setRadioState(dom.strategyTabs, $(`[data-strategy="${id}"]`, dom.strategyTabs));
-    dom.strategyBlurb.textContent = STRATEGIES[id].blurb;
   }
 
   function setupAutoRefresh() {
@@ -1911,6 +2080,7 @@
       dom.maxPrice.value = state.filters.maxPrice;
       dom.minRoi.value = state.filters.minRoi;
       dom.maxRoi.value = state.filters.maxRoi;
+      dom.maxVol.value = state.filters.maxVol;
       dom.diversify.value = state.filters.diversify;
     }
     if (typeof s.autoRefresh === 'boolean') { state.autoRefresh = s.autoRefresh; dom.autoRefresh.checked = s.autoRefresh; }
@@ -1927,6 +2097,7 @@
    * ===================================================================== */
   function init() {
     UI.cache();
+    buildPresetList();   // must exist before loadSettings/selectStrategy run
     loadSettings();
     Journal.load();
     JournalUI.init();                   // load saved filter FIRST (before any saveSettings)

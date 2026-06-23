@@ -114,7 +114,10 @@ a:hover { text-decoration: underline; }
 .btn:focus-visible,
 .advanced summary:focus-visible,
 .th-sort:focus-visible,
-.flip-table tbody tr:focus-visible,
+.navtab:focus-visible,
+.chip-filter:focus-visible,
+.icon-btn:focus-visible,
+.row-open:focus-visible,
 .drawer__close:focus-visible,
 .checkbox input:focus-visible,
 a:focus-visible {
@@ -213,11 +216,6 @@ a:focus-visible {
 
 /* ----------------------------- Layout --------------------------------- */
 .layout {
-  position: relative;
-  z-index: 1;
-  max-width: var(--max-width);
-  margin: 0 auto;
-  padding: 12px 20px 40px;
   display: grid;
   grid-template-columns: 340px 1fr;
   gap: 20px;
@@ -539,8 +537,21 @@ th[aria-sort="descending"] .th-sort::after { content: " ▾"; color: var(--gold)
   object-fit: contain;
   filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.7));
 }
-.item-cell__name { color: var(--ink); }
-.item-cell__name .members-star { font-size: 13px; margin-left: 4px; vertical-align: middle; }
+.item-cell__namecol { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.item-cell__name { color: var(--ink); font-size: inherit; }
+.item-cell .members-star { font-size: 13px; margin-left: 4px; vertical-align: middle; }
+/* The row activator looks like plain text but is a real, focusable button. */
+.row-open {
+  font-family: var(--font-ui);
+  font-size: inherit;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.flip-table tbody tr:hover .row-open { color: var(--gold-bright); }
 .item-cell__tag {
   display: inline-block;
   margin-left: 6px;
@@ -683,65 +694,109 @@ th[aria-sort="descending"] .th-sort::after { content: " ▾"; color: var(--gold)
 .drawer__commit { margin-top: 14px; }
 .drawer__commit--done { background: linear-gradient(180deg, #5bd11a, #36a30b); }
 
-/* ----------------------------- Flip Journal --------------------------- */
-.journal-wrap {
+/* ----------------------------- Views & nav --------------------------- */
+.viewnav {
   position: relative;
   z-index: 1;
   max-width: var(--max-width);
   margin: 0 auto;
-  padding: 0 20px 8px;
-}
-.journal { padding: 0; overflow: hidden; }
-
-.journal__header {
+  padding: 6px 20px 0;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 14px 16px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.12));
-  border: 0;
-  cursor: pointer;
-  font-family: var(--font-ui);
-  text-align: left;
+  gap: 6px;
 }
-.journal__title {
+.navtab {
   font-family: var(--font-display);
-  font-size: 28px;
-  color: var(--gold);
-  text-shadow: var(--shadow-drop);
-}
-.journal__title::before { content: "📒 "; }
-.journal__chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
-.journal__caret { color: var(--gold); font-size: 18px; transition: transform 0.15s ease; }
-.journal__header[aria-expanded="true"] .journal__caret { transform: rotate(90deg); }
-
-.jchip {
-  padding: 2px 9px;
-  font-size: 15px;
-  border-radius: 999px;
-  border: 1px solid var(--frame-dark);
-  background: var(--stone-800);
+  font-size: 22px;
+  letter-spacing: 0.4px;
   color: var(--ink-dim);
-  white-space: nowrap;
+  background: linear-gradient(180deg, var(--stone-600), var(--stone-700));
+  border: 2px solid var(--frame-dark);
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 8px 18px;
+  cursor: pointer;
+  text-shadow: 1px 1px 0 #000;
+  box-shadow: inset 1px 1px 0 rgba(154, 135, 97, 0.3);
 }
-.jchip b { color: var(--gold-bright); }
-.jchip--profit b { color: var(--pos); }
-.jchip--loss b { color: var(--neg); }
+.navtab:hover { filter: brightness(1.12); color: var(--gold-soft); }
+.navtab[aria-selected="true"] {
+  color: var(--gold-bright);
+  background: linear-gradient(180deg, #6a5a37, var(--stone-600));
+  box-shadow: inset 0 2px 0 var(--gold), inset 1px 1px 0 rgba(255, 220, 130, 0.4);
+}
+.navtab__badge {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 5px;
+  margin-left: 4px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  text-align: center;
+  color: #2a1a00;
+  background: var(--gold);
+  border-radius: 999px;
+}
+.views { position: relative; z-index: 1; }
+.view { max-width: var(--max-width); margin: 0 auto; padding: 14px 20px 30px; }
 
-.journal__body { padding: 4px 16px 18px; border-top: 2px solid var(--frame-dark); }
-.journal__metrics { margin-top: 14px; }
+/* ----------------------------- Explore ------------------------------- */
+.explore__searchbar { position: relative; margin-bottom: 12px; }
+.explore__search-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: var(--gold-soft); font-size: 22px; pointer-events: none;
+}
+#search-input { padding-left: 38px; font-size: 22px; }
+.explore__bar {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px 14px; margin-bottom: 10px;
+}
+.explore__modes { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.explore__hint { margin: 0; color: var(--ink-dim); font-size: 16px; }
+.cell-sub { display: block; font-size: 13px; color: var(--ink-faint); }
+.roi-neg { color: var(--neg); }
 
-.journal__chart-card {
+/* ----------------------------- Analytics / charts -------------------- */
+.journal__metrics { margin-bottom: 16px; }
+.analytics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
   margin-bottom: 16px;
+}
+@media (max-width: 760px) { .analytics-grid { grid-template-columns: 1fr; } }
+.chart-card {
   padding: 12px 14px;
   background: #100d07;
   border: 2px solid var(--frame-dark);
   border-radius: var(--radius);
-  box-shadow: inset 2px 2px 3px rgba(0,0,0,0.7);
+  box-shadow: inset 2px 2px 3px rgba(0, 0, 0, 0.7);
 }
-.journal__chart-label { display: block; color: var(--ink-faint); font-size: 15px; margin-bottom: 6px; }
-.journal__chart svg { width: 100%; height: auto; display: block; }
+.chart-card__label { display: block; color: var(--ink-faint); font-size: 15px; margin-bottom: 8px; }
+.chart-card__body svg { width: 100%; height: auto; display: block; }
+.chart-card__body .chart-empty { padding: 30px 0; }
+
+.grid-line { stroke: rgba(154, 135, 97, 0.18); stroke-width: 1; }
+.axis-label { fill: var(--ink-faint); font: 13px var(--font-ui); }
+.vol-bar { fill: rgba(255, 176, 0, 0.28); }
+.chart-legend { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-top: 6px; font-size: 15px; color: var(--ink-dim); }
+.chart-legend b { color: var(--gold-bright); }
+.chart-legend__dim { color: var(--ink-faint); }
+.swatch { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.swatch--sell { background: var(--gold); }
+.swatch--buy { background: var(--pos); }
+
+.barlist { display: flex; flex-direction: column; gap: 7px; }
+.barlist__row { display: grid; grid-template-columns: 116px 1fr auto; align-items: center; gap: 8px; }
+.barlist__label { font-size: 15px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barlist__track { height: 14px; background: rgba(0, 0, 0, 0.3); border-radius: 3px; overflow: hidden; }
+.barlist__fill { display: block; height: 100%; border-radius: 3px; }
+.barlist__fill--pos { background: linear-gradient(90deg, var(--pos-deep), var(--pos)); }
+.barlist__fill--neg { background: linear-gradient(90deg, #7a2b20, var(--neg)); }
+.barlist__val { font-size: 15px; min-width: 56px; text-align: right; }
+
+/* ----------------------------- Chart range controls ------------------ */
+.chart-controls { display: flex; gap: 5px; justify-content: flex-end; margin-bottom: 6px; }
+.chip-filter--xs { padding: 3px 10px; font-size: 14px; }
 
 .journal__toolbar {
   display: flex;
@@ -775,17 +830,18 @@ th[aria-sort="descending"] .th-sort::after { content: " ▾"; color: var(--gold)
 }
 .btn--danger:hover { filter: brightness(1.15); }
 
-/* Journal table specifics — headers here have no sort button, so restore
-   the padding that .flip-table th drops, and they aren't clickable rows. */
-.journal-table thead th { padding: 9px 12px; }
-.journal-table thead th.col-item { text-align: left; }
+/* Journal & explore tables have plain headers (no .th-sort button), so restore
+   the padding that .flip-table th drops for the sort-button layout. */
+.journal-table thead th,
+.explore-table thead th { padding: 9px 12px; }
+.journal-table thead th.col-item,
+.explore-table thead th.col-item { text-align: left; }
 .journal-table tbody tr { cursor: default; }
 .journal-table tbody tr:hover td { background: rgba(255, 176, 0, 0.06); }
 .journal-table td { vertical-align: middle; }
 .col-date { white-space: nowrap; }
 .col-actions { width: 1%; }
-.journal__empty { color: var(--ink-dim); font-size: 17px; line-height: 1.5; padding: 22px 4px; text-align: center; }
-.journal__empty b { color: var(--gold-soft); }
+.journal-nomatch { text-align: center; color: var(--ink-dim); padding: 18px; }
 
 .status-badge {
   display: inline-block;

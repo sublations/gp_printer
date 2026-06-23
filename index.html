@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="GP Printer - a Grand Exchange merchanting calculator for Old School RuneScape. Ingests live GE prices and trade volumes to surface the most profitable flips for your stack." />
+  <meta name="description" content="GP Printer - a Grand Exchange merchanting calculator for Old School RuneScape. Live GE prices, profitable flip plans, item analytics and a flip journal." />
   <meta name="color-scheme" content="dark" />
   <title>GP Printer - OSRS Grand Exchange Flipping Calculator</title>
 
@@ -35,190 +35,240 @@
     </div>
   </header>
 
-  <main class="layout">
-    <!-- ===================== CONTROLS ===================== -->
-    <section class="panel controls" aria-label="Flip settings">
-      <h2 class="panel__title">Trade Setup</h2>
+  <!-- Concise screen-reader announcements only. -->
+  <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
 
-      <div class="field">
-        <label class="field__label" for="stack-input">Your coin stack</label>
-        <div class="stack-input">
-          <span class="stack-input__coin" aria-hidden="true"></span>
-          <input
-            id="stack-input"
-            class="input input--stack"
-            type="text"
-            inputmode="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="e.g. 100m, 5.5b, 250k"
-            value="10m"
-            aria-describedby="stack-parsed" />
-        </div>
-        <p class="field__hint" id="stack-parsed">Type how much gp you want to flip with. Shorthand works: <b>k</b>, <b>m</b>, <b>b</b>.</p>
+  <nav class="viewnav" id="viewnav" role="tablist" aria-label="Views">
+    <button type="button" class="navtab" id="nav-flipper" role="tab" data-view="flipper" aria-selected="true" aria-controls="view-flipper">Flip Finder</button>
+    <button type="button" class="navtab" id="nav-explore" role="tab" data-view="explore" aria-selected="false" aria-controls="view-explore" tabindex="-1">Explore Items</button>
+    <button type="button" class="navtab" id="nav-journal" role="tab" data-view="journal" aria-selected="false" aria-controls="view-journal" tabindex="-1">
+      Journal <span class="navtab__badge" id="nav-journal-badge" hidden></span>
+    </button>
+  </nav>
+
+  <main class="views">
+    <!-- ============================ FLIP FINDER ============================ -->
+    <section class="view" id="view-flipper" role="tabpanel" aria-labelledby="nav-flipper">
+      <div class="layout">
+        <!-- Controls -->
+        <section class="panel controls" aria-label="Flip settings">
+          <h2 class="panel__title">Trade Setup</h2>
+
+          <div class="field">
+            <label class="field__label" for="stack-input">Your coin stack</label>
+            <div class="stack-input">
+              <span class="stack-input__coin" aria-hidden="true"></span>
+              <input id="stack-input" class="input input--stack" type="text" inputmode="text"
+                autocomplete="off" spellcheck="false" placeholder="e.g. 100m, 5.5b, 250k"
+                value="10m" aria-describedby="stack-parsed" />
+            </div>
+            <p class="field__hint" id="stack-parsed">Type how much gp you want to flip with. Shorthand works: <b>k</b>, <b>m</b>, <b>b</b>.</p>
+          </div>
+
+          <div class="field">
+            <span class="field__label" id="strategy-label">Flipping style</span>
+            <div class="strategy-tabs" id="strategy-tabs" role="radiogroup" aria-labelledby="strategy-label">
+              <button type="button" class="strategy-tab" role="radio" data-strategy="short" aria-checked="true">
+                <span class="strategy-tab__name">Short&nbsp;Term</span>
+                <span class="strategy-tab__sub">High volume &middot; fast</span>
+              </button>
+              <button type="button" class="strategy-tab" role="radio" data-strategy="long" aria-checked="false">
+                <span class="strategy-tab__name">Long&nbsp;Term</span>
+                <span class="strategy-tab__sub">Big margins &middot; patient</span>
+              </button>
+              <button type="button" class="strategy-tab" role="radio" data-strategy="risky" aria-checked="false">
+                <span class="strategy-tab__name">Risky</span>
+                <span class="strategy-tab__sub">Volatile &middot; high ROI</span>
+              </button>
+              <button type="button" class="strategy-tab" role="radio" data-strategy="balanced" aria-checked="false">
+                <span class="strategy-tab__name">Balanced</span>
+                <span class="strategy-tab__sub">Safe all-rounder</span>
+              </button>
+            </div>
+            <p class="field__hint" id="strategy-blurb"></p>
+          </div>
+
+          <div class="field field--inline">
+            <span class="field__label">Account</span>
+            <div class="toggle-group" id="account-toggle" role="radiogroup" aria-label="Account type">
+              <button class="toggle" data-account="members" role="radio" aria-checked="true">
+                <span class="members-star" aria-hidden="true">★</span> Members
+              </button>
+              <button class="toggle" data-account="f2p" role="radio" aria-checked="false">F2P only</button>
+            </div>
+          </div>
+
+          <details class="advanced">
+            <summary>Advanced filters</summary>
+            <div class="advanced__grid">
+              <label class="field">
+                <span class="field__label">Min. daily volume</span>
+                <input id="min-volume" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
+                <span class="field__hint">Skip thinly-traded items. Higher = safer fills. <code>auto</code> = per-style default.</span>
+              </label>
+              <label class="field">
+                <span class="field__label">Max. buy price (per item)</span>
+                <input id="max-price" class="input" type="text" value="none" autocomplete="off" spellcheck="false" />
+                <span class="field__hint">Cap on single-item cost. e.g. <code>2m</code>.</span>
+              </label>
+              <label class="field">
+                <span class="field__label">Min. profit margin</span>
+                <input id="min-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
+                <span class="field__hint">Lowest return after tax. e.g. <code>1.5%</code>.</span>
+              </label>
+              <label class="field">
+                <span class="field__label">Max. margin (sanity cap)</span>
+                <input id="max-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
+                <span class="field__hint">Reject too-good-to-be-true spreads (stale prints). e.g. <code>30%</code>.</span>
+              </label>
+              <label class="field">
+                <span class="field__label">Spread across</span>
+                <input id="diversify" class="input" type="number" min="1" max="30" value="8" />
+                <span class="field__hint">Max different items in your plan.</span>
+              </label>
+            </div>
+            <label class="checkbox">
+              <input type="checkbox" id="auto-refresh" />
+              <span>Auto-refresh prices every 60s</span>
+            </label>
+          </details>
+
+          <button class="btn btn--primary btn--block" id="calc-btn">
+            <span class="btn__label">Find me flips</span>
+          </button>
+
+          <p class="controls__meta" id="updated-meta">Prices not loaded yet.</p>
+        </section>
+
+        <!-- Results -->
+        <section class="results">
+          <div class="summary" id="summary" hidden>
+            <article class="stat">
+              <span class="stat__label">Capital deployed</span>
+              <span class="stat__value gp" id="stat-outlay">&mdash;</span>
+            </article>
+            <article class="stat stat--accent">
+              <span class="stat__label">Est. profit / cycle</span>
+              <span class="stat__value gp gp--profit" id="stat-profit">&mdash;</span>
+            </article>
+            <article class="stat">
+              <span class="stat__label">Blended margin</span>
+              <span class="stat__value" id="stat-roi">&mdash;</span>
+            </article>
+            <article class="stat">
+              <span class="stat__label">Time horizon</span>
+              <span class="stat__value" id="stat-horizon">&mdash;</span>
+            </article>
+          </div>
+
+          <div class="results__bar" id="results-bar" hidden>
+            <h2 class="results__title">Your flip plan</h2>
+            <p class="results__note" id="results-note"></p>
+          </div>
+
+          <div class="table-wrap" id="table-wrap" hidden>
+            <table class="flip-table" id="flip-table">
+              <thead>
+                <tr>
+                  <th class="col-item" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="name">Item</button></th>
+                  <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="buy">Buy at</button></th>
+                  <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="sell">Sell at</button></th>
+                  <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="qty">Qty</button></th>
+                  <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="outlay">Outlay</button></th>
+                  <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="profit">Profit</button></th>
+                  <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="roi">Margin</button></th>
+                  <th class="col-num col-vol" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="vol24">Vol / day</button></th>
+                </tr>
+              </thead>
+              <tbody id="flip-body"></tbody>
+            </table>
+          </div>
+
+          <div class="placeholder" id="placeholder">
+            <div class="placeholder__art" aria-hidden="true"></div>
+            <h3 class="placeholder__title">No plan yet</h3>
+            <p class="placeholder__text">Set your coin stack and flipping style, then hit <b>Find me flips</b>. GP Printer will pull live Grand Exchange prices and tell you exactly what to buy and where to sell.</p>
+          </div>
+
+          <div class="loader" id="loader" hidden>
+            <div class="loader__spinner" aria-hidden="true"></div>
+            <p class="loader__text" id="loader-text">Reading the Grand Exchange&hellip;</p>
+          </div>
+        </section>
       </div>
-
-      <div class="field">
-        <span class="field__label" id="strategy-label">Flipping style</span>
-        <div class="strategy-tabs" id="strategy-tabs" role="radiogroup" aria-labelledby="strategy-label">
-          <button type="button" class="strategy-tab" role="radio" data-strategy="short" aria-checked="true">
-            <span class="strategy-tab__name">Short&nbsp;Term</span>
-            <span class="strategy-tab__sub">High volume &middot; fast</span>
-          </button>
-          <button type="button" class="strategy-tab" role="radio" data-strategy="long" aria-checked="false">
-            <span class="strategy-tab__name">Long&nbsp;Term</span>
-            <span class="strategy-tab__sub">Big margins &middot; patient</span>
-          </button>
-          <button type="button" class="strategy-tab" role="radio" data-strategy="risky" aria-checked="false">
-            <span class="strategy-tab__name">Risky</span>
-            <span class="strategy-tab__sub">Volatile &middot; high ROI</span>
-          </button>
-          <button type="button" class="strategy-tab" role="radio" data-strategy="balanced" aria-checked="false">
-            <span class="strategy-tab__name">Balanced</span>
-            <span class="strategy-tab__sub">Safe all-rounder</span>
-          </button>
-        </div>
-        <p class="field__hint" id="strategy-blurb"></p>
-      </div>
-
-      <div class="field field--inline">
-        <span class="field__label">Account</span>
-        <div class="toggle-group" id="account-toggle" role="radiogroup" aria-label="Account type">
-          <button class="toggle" data-account="members" role="radio" aria-checked="true">
-            <span class="members-star" aria-hidden="true">★</span> Members
-          </button>
-          <button class="toggle" data-account="f2p" role="radio" aria-checked="false">F2P only</button>
-        </div>
-      </div>
-
-      <details class="advanced">
-        <summary>Advanced filters</summary>
-        <div class="advanced__grid">
-          <label class="field">
-            <span class="field__label">Min. daily volume</span>
-            <input id="min-volume" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
-            <span class="field__hint">Skip thinly-traded items. Higher = safer fills. <code>auto</code> = per-style default.</span>
-          </label>
-          <label class="field">
-            <span class="field__label">Max. buy price (per item)</span>
-            <input id="max-price" class="input" type="text" value="none" autocomplete="off" spellcheck="false" />
-            <span class="field__hint">Cap on single-item cost. e.g. <code>2m</code>.</span>
-          </label>
-          <label class="field">
-            <span class="field__label">Min. profit margin</span>
-            <input id="min-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
-            <span class="field__hint">Lowest return after tax. e.g. <code>1.5%</code>.</span>
-          </label>
-          <label class="field">
-            <span class="field__label">Max. margin (sanity cap)</span>
-            <input id="max-roi" class="input" type="text" value="auto" autocomplete="off" spellcheck="false" />
-            <span class="field__hint">Reject too-good-to-be-true spreads (stale prints). e.g. <code>30%</code>.</span>
-          </label>
-          <label class="field">
-            <span class="field__label">Spread across</span>
-            <input id="diversify" class="input" type="number" min="1" max="30" value="8" />
-            <span class="field__hint">Max different items in your plan.</span>
-          </label>
-        </div>
-        <label class="checkbox">
-          <input type="checkbox" id="auto-refresh" />
-          <span>Auto-refresh prices every 60s</span>
-        </label>
-      </details>
-
-      <button class="btn btn--primary btn--block" id="calc-btn">
-        <span class="btn__label">Find me flips</span>
-      </button>
-
-      <p class="controls__meta" id="updated-meta">Prices not loaded yet.</p>
     </section>
 
-    <!-- ===================== RESULTS ===================== -->
-    <section class="results">
-      <!-- Concise screen-reader announcements only (not the whole table). -->
-      <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
+    <!-- ============================ EXPLORE ============================ -->
+    <section class="view" id="view-explore" role="tabpanel" aria-labelledby="nav-explore" hidden>
+      <div class="explore">
+        <div class="explore__searchbar">
+          <span class="explore__search-icon" aria-hidden="true">⌕</span>
+          <input id="search-input" class="input" type="search" autocomplete="off" spellcheck="false"
+            placeholder="Search any item — e.g. abyssal whip, nature rune, dragon bones"
+            aria-label="Search items" />
+        </div>
 
-      <div class="summary" id="summary" hidden>
-        <article class="stat">
-          <span class="stat__label">Capital deployed</span>
-          <span class="stat__value gp" id="stat-outlay">&mdash;</span>
-        </article>
-        <article class="stat stat--accent">
-          <span class="stat__label">Est. profit / cycle</span>
-          <span class="stat__value gp gp--profit" id="stat-profit">&mdash;</span>
-        </article>
-        <article class="stat">
-          <span class="stat__label">Blended margin</span>
-          <span class="stat__value" id="stat-roi">&mdash;</span>
-        </article>
-        <article class="stat">
-          <span class="stat__label">Time horizon</span>
-          <span class="stat__value" id="stat-horizon">&mdash;</span>
-        </article>
-      </div>
+        <div class="explore__bar">
+          <div class="explore__modes" id="explore-modes" role="radiogroup" aria-label="Browse the market">
+            <button type="button" class="chip-filter" role="radio" data-mode="traded" aria-checked="true">Most traded</button>
+            <button type="button" class="chip-filter" role="radio" data-mode="risers" aria-checked="false" tabindex="-1">Risers 24h</button>
+            <button type="button" class="chip-filter" role="radio" data-mode="fallers" aria-checked="false" tabindex="-1">Fallers 24h</button>
+            <button type="button" class="chip-filter" role="radio" data-mode="margin" aria-checked="false" tabindex="-1">Top margins</button>
+          </div>
+          <p class="explore__hint" id="explore-hint"></p>
+        </div>
 
-      <div class="results__bar" id="results-bar" hidden>
-        <h2 class="results__title">Your flip plan</h2>
-        <p class="results__note" id="results-note"></p>
-      </div>
+        <div class="table-wrap" id="search-wrap" hidden>
+          <table class="flip-table explore-table">
+            <thead>
+              <tr>
+                <th class="col-item" scope="col">Item</th>
+                <th class="col-num" scope="col">Buy</th>
+                <th class="col-num" scope="col">Sell</th>
+                <th class="col-num" scope="col">Margin</th>
+                <th class="col-num" scope="col" title="Live mid vs. the 24-hour average">Vs avg</th>
+                <th class="col-num col-vol" scope="col">Vol / day</th>
+              </tr>
+            </thead>
+            <tbody id="search-rows"></tbody>
+          </table>
+        </div>
 
-      <div class="table-wrap" id="table-wrap" hidden>
-        <table class="flip-table" id="flip-table">
-          <thead>
-            <tr>
-              <th class="col-item" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="name">Item</button></th>
-              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="buy">Buy at</button></th>
-              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="sell">Sell at</button></th>
-              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="qty">Qty</button></th>
-              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="outlay">Outlay</button></th>
-              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="profit">Profit</button></th>
-              <th class="col-num" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="roi">Margin</button></th>
-              <th class="col-num col-vol" scope="col" aria-sort="none"><button type="button" class="th-sort" data-sort="vol24">Vol / day</button></th>
-            </tr>
-          </thead>
-          <tbody id="flip-body"></tbody>
-        </table>
-      </div>
+        <div class="loader" id="explore-loader" hidden>
+          <div class="loader__spinner" aria-hidden="true"></div>
+          <p class="loader__text">Reading the Grand Exchange&hellip;</p>
+        </div>
 
-      <!-- Placeholder / empty / loading states -->
-      <div class="placeholder" id="placeholder">
-        <div class="placeholder__art" aria-hidden="true"></div>
-        <h3 class="placeholder__title">No plan yet</h3>
-        <p class="placeholder__text">Set your coin stack and flipping style, then hit <b>Find me flips</b>. GP Printer will pull live Grand Exchange prices and tell you exactly what to buy and where to sell.</p>
-      </div>
-
-      <div class="loader" id="loader" hidden>
-        <div class="loader__spinner" aria-hidden="true"></div>
-        <p class="loader__text" id="loader-text">Reading the Grand Exchange&hellip;</p>
+        <div class="placeholder" id="explore-empty" hidden>
+          <div class="placeholder__art" aria-hidden="true"></div>
+          <h3 class="placeholder__title">Nothing found</h3>
+          <p class="placeholder__text" id="explore-empty-text">No items match your search.</p>
+        </div>
       </div>
     </section>
-  </main>
 
-  <!-- ===================== FLIP JOURNAL ===================== -->
-  <div class="journal-wrap">
-    <section class="journal panel" id="journal" aria-label="Flip journal">
-      <button class="journal__header" id="journal-toggle" aria-expanded="false" aria-controls="journal-body">
-        <span class="journal__title">Flip Journal</span>
-        <span class="journal__chips" id="journal-chips"></span>
-        <span class="journal__caret" aria-hidden="true">▸</span>
-      </button>
-
-      <div class="journal__body" id="journal-body" hidden>
-        <!-- Lifetime performance -->
+    <!-- ============================ JOURNAL ============================ -->
+    <section class="view" id="view-journal" role="tabpanel" aria-labelledby="nav-journal" hidden>
+      <div class="journal-view">
         <div class="journal__metrics summary" id="journal-metrics"></div>
 
-        <div class="journal__chart-card" id="journal-chart-card" hidden>
-          <span class="journal__chart-label">Cumulative realised profit</span>
-          <div class="journal__chart" id="journal-chart"></div>
+        <div class="analytics-grid">
+          <div class="chart-card">
+            <span class="chart-card__label">Cumulative realised profit</span>
+            <div class="chart-card__body" id="journal-chart"></div>
+          </div>
+          <div class="chart-card">
+            <span class="chart-card__label">Realised profit by item</span>
+            <div class="chart-card__body" id="journal-byitem"></div>
+          </div>
         </div>
 
-        <!-- Toolbar: status filter + data IO -->
         <div class="journal__toolbar">
           <div class="journal__filters" id="journal-filters" role="radiogroup" aria-label="Filter by status">
             <button type="button" class="chip-filter" role="radio" data-filter="all" aria-checked="true">All</button>
-            <button type="button" class="chip-filter" role="radio" data-filter="open" aria-checked="false">Open</button>
-            <button type="button" class="chip-filter" role="radio" data-filter="done" aria-checked="false">Done</button>
-            <button type="button" class="chip-filter" role="radio" data-filter="cancelled" aria-checked="false">Cancelled</button>
+            <button type="button" class="chip-filter" role="radio" data-filter="open" aria-checked="false" tabindex="-1">Open</button>
+            <button type="button" class="chip-filter" role="radio" data-filter="done" aria-checked="false" tabindex="-1">Done</button>
+            <button type="button" class="chip-filter" role="radio" data-filter="cancelled" aria-checked="false" tabindex="-1">Cancelled</button>
           </div>
           <div class="journal__io">
             <button type="button" class="btn btn--sm" id="journal-export">Export</button>
@@ -246,12 +296,14 @@
           </table>
         </div>
 
-        <p class="journal__empty" id="journal-empty">
-          No committed flips yet. Open any flip from your plan and hit <b>Commit this flip to journal</b> to lock in the buy/sell prices &mdash; they'll stay here even after prices refresh.
-        </p>
+        <div class="placeholder" id="journal-empty">
+          <div class="placeholder__art" aria-hidden="true"></div>
+          <h3 class="placeholder__title">Your journal is empty</h3>
+          <p class="placeholder__text">Find a flip (or search an item in <b>Explore</b>), open it, and hit <b>Commit this flip to journal</b>. Committed flips are saved here with their prices locked in &mdash; they survive price refreshes, and you can track them to completion.</p>
+        </div>
       </div>
     </section>
-  </div>
+  </main>
 
   <footer class="footer">
     <p>
@@ -276,7 +328,15 @@
           <p class="drawer__examine" id="drawer-examine"></p>
         </div>
       </div>
+
+      <div class="chart-controls" id="drawer-chart-controls" role="radiogroup" aria-label="Chart range">
+        <button type="button" class="chip-filter chip-filter--xs" role="radio" data-step="5m" aria-checked="false" tabindex="-1">~30h</button>
+        <button type="button" class="chip-filter chip-filter--xs" role="radio" data-step="1h" aria-checked="true">~2wk</button>
+        <button type="button" class="chip-filter chip-filter--xs" role="radio" data-step="6h" aria-checked="false" tabindex="-1">~3mo</button>
+        <button type="button" class="chip-filter chip-filter--xs" role="radio" data-step="24h" aria-checked="false" tabindex="-1">~1yr</button>
+      </div>
       <div class="drawer__chart" id="drawer-chart"></div>
+
       <dl class="drawer__stats" id="drawer-stats"></dl>
       <div class="drawer__instructions" id="drawer-instructions"></div>
       <button class="btn btn--primary btn--block drawer__commit" id="drawer-commit">

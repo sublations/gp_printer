@@ -6,6 +6,12 @@ A static, single-page **Old School RuneScape Grand Exchange flipping calculator*
 
 No build step, no dependencies, no backend. Just HTML + CSS + vanilla JS.
 
+## The three views
+
+- **Flip Finder** — enter your coin stack and flipping style; get a ranked, budget-allocated plan (quantities capped by the buy limit *and* realistic daily volume). Click any row for the full breakdown.
+- **Explore Items** — search any item by name, or browse the market by **Most traded**, **Risers 24h**, **Fallers 24h**, or **Top margins**. Click an item for its price-history chart (selectable range), live stats, and a one-click commit.
+- **Journal** — every flip you commit is saved locally with its prices locked in (it survives price refreshes). Track each to completion with actuals/deviations, and see lifetime analytics: realised P/L, win rate, ROI, average hold, a cumulative-profit chart, and profit-by-item. Export/import the history as JSON to back it up or move devices.
+
 ## How it works
 
 | Stage | What happens |

@@ -30,6 +30,22 @@
     };
   }
 
+  /**
+   * The first cell of a result row: icon + a real <button> activator (so the
+   * <tr> keeps its table-row semantics and per-cell data stays navigable),
+   * the members star, and any status tags. The row-level click handler opens
+   * the drawer; the button gives keyboard/screen-reader users a labelled target.
+   */
+  function itemNameCell(item, tags) {
+    const icon = el('img', { class: 'item-cell__icon', alt: '', loading: 'lazy', width: 32, height: 32 });
+    setItemIcon(icon, item);
+    const nameBtn = el('button', { type: 'button', class: 'item-cell__name row-open', 'aria-label': `${item.name} — view details` }, item.name);
+    return el('td', { class: 'col-item' },
+      el('div', { class: 'item-cell' }, icon, nameBtn,
+        item.members ? el('span', { class: 'members-star', title: 'Members item' }, '★') : null,
+        ...(tags || [])));
+  }
+
   // Grand Exchange sales tax: 2%, rounded down, capped at 5m per item,
   // not charged on items selling under 50 gp, and a fixed exemption list.
   const TAX_RATE = 0.02;
@@ -131,13 +147,22 @@
     account: 'members',
     filters: { minVolume: 'auto', maxPrice: 'none', minRoi: 'auto', maxRoi: 'auto', diversify: 8 },
     autoRefresh: false,
+    view: 'flipper',          // flipper | explore | journal
+    exploreMode: 'traded',    // traded | risers | fallers | margin
+    chartStep: '1h',          // drawer price-history timestep
     // data
-    mapping: null,      // Map<id, meta>
-    plan: [],           // current allocated plan rows
+    mapping: null,            // Map<id, meta>
+    latest: null,             // raw /latest data, keyed by id
+    h1: null,                 // raw /1h data
+    h24: null,                // raw /24h data
+    pricesAt: 0,              // ms timestamp of the last price fetch
+    plan: [],                 // current allocated plan rows
     lastUpdated: null,
     sort: { key: 'profit', dir: 'desc' },
     autoTimer: null,
   };
+
+  const PRICES_TTL = 45_000; // reuse fetched price feeds for 45s across views
 
   /* ===================================================================== *
    *  FORMATTING - OSRS conventions (1k, 100m, 2.1b)
@@ -164,6 +189,12 @@
     pct(n, dp = 2) {
       if (n == null || !isFinite(n)) return '-';
       return (n * 100).toFixed(dp) + '%';
+    },
+    /** Signed percentage: 0.023 → "+2.3%", -0.011 → "-1.1%". */
+    signed(n, dp = 1) {
+      if (n == null || !isFinite(n)) return '-';
+      const v = n * 100;
+      return (v >= 0 ? '+' : '') + v.toFixed(dp) + '%';
     },
     /** Relative age: 65 → "1h 5m ago". */
     ago(minutes) {
@@ -252,6 +283,15 @@
       node.append(c.nodeType ? c : document.createTextNode(c));
     }
     return node;
+  }
+
+  /** Debounce: delay calling `fn` until `wait`ms after the last invocation. */
+  function debounce(fn, wait) {
+    let t;
+    return function (...args) {
+      clearTimeout(t);
+      t = setTimeout(() => fn.apply(this, args), wait);
+    };
   }
 
   /* ===================================================================== *
@@ -467,6 +507,26 @@
    * ===================================================================== */
   let running = false;
 
+  /**
+   * Ensure mapping + latest/1h/24h feeds are loaded and reasonably fresh.
+   * Shared by the flip finder and the explore view; within the TTL the cached
+   * feeds are reused so switching views doesn't hammer the API. The mapping is
+   * fetched (and parsed) once and then kept in memory.
+   */
+  async function ensurePrices(force = false) {
+    if (!force && state.latest && Date.now() - state.pricesAt < PRICES_TTL) return;
+    const [mappingArr, latest, h1, h24] = await Promise.all([
+      state.mapping ? null : Api.mapping(),
+      Api.latest(), Api.hour(), Api.day(),
+    ]);
+    if (!state.mapping) state.mapping = new Map(mappingArr.map((it) => [it.id, it]));
+    state.latest = latest.data || {};
+    state.h1 = (h1 && h1.data) || {};
+    state.h24 = (h24 && h24.data) || {};
+    state.pricesAt = Date.now();
+    state.lastUpdated = state.pricesAt;
+  }
+
   async function analyse() {
     if (running) return;
     running = true;
@@ -474,34 +534,18 @@
     UI.status('loading', 'Reading the Grand Exchange…');
 
     try {
-      // The three price feeds are always re-fetched; the mapping is only
-      // loaded (and parsed) the first time - afterwards it lives in memory.
-      const [mappingArr, latest, h1, h24] = await Promise.all([
-        state.mapping ? null : Api.mapping(),
-        Api.latest(),
-        Api.hour(),
-        Api.day(),
-      ]);
+      await ensurePrices(true); // a manual "Find me flips" always pulls fresh
 
-      if (!state.mapping) {
-        state.mapping = new Map(mappingArr.map((it) => [it.id, it]));
-      }
-
-      const nowSec = Math.floor(Date.now() / 1000);
-      const L = latest.data || {};
-      const H = (h1 && h1.data) || {};
-      const D = (h24 && h24.data) || {};
-
+      const nowSec = Math.floor(state.pricesAt / 1000);
       const joined = [];
       for (const meta of state.mapping.values()) {
-        const m = computeMetrics(meta, L[meta.id], H[meta.id], D[meta.id], nowSec);
+        const m = computeMetrics(meta, state.latest[meta.id], state.h1[meta.id], state.h24[meta.id], nowSec);
         if (m) joined.push(m);
       }
 
       const ranked = rankOpportunities(joined, state.strategy);
       const maxItems = clamp(parseInt(state.filters.diversify, 10) || 8, 1, 30);
       state.plan = buildPlan(ranked, state.stack, maxItems);
-      state.lastUpdated = Date.now();
 
       UI.renderResults();
       UI.status('ok', `Found ${ranked.length.toLocaleString()} flippable items.`);
@@ -526,6 +570,70 @@
   }
 
   function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+  /**
+   * Lenient display snapshot for ANY item (explore view + drawer). Unlike
+   * computeMetrics it never returns null and applies no profitability filter —
+   * it just reports the current numbers, so even break-even or thin items can
+   * be browsed. Reuses the field names computeMetrics produces so the drawer
+   * can render either kind of object.
+   */
+  function itemSnapshot(meta, nowSec) {
+    const p = (state.latest && state.latest[meta.id]) || null;
+    const a1 = (state.h1 && state.h1[meta.id]) || null;
+    const a24 = (state.h24 && state.h24[meta.id]) || null;
+
+    const buy = p && p.low != null ? p.low : null;
+    const sell = p && p.high != null ? p.high : null;
+    const hasPrices = buy != null && sell != null && buy > 0 && sell > 0;
+
+    const tax = hasPrices ? taxOf(sell, meta.id) : 0;
+    const margin = hasPrices ? sell - buy - tax : null;
+    const roi = hasPrices && buy > 0 ? margin / buy : null;
+
+    const dHigh = (a24 && a24.highPriceVolume) || 0;
+    const dLow = (a24 && a24.lowPriceVolume) || 0;
+    const liquidity = Math.min(dHigh, dLow);
+    const dailyTotal = dHigh + dLow;
+
+    const avgHigh = (a1 && a1.avgHighPrice) || (a24 && a24.avgHighPrice) || 0;
+    const avgLow = (a1 && a1.avgLowPrice) || (a24 && a24.avgLowPrice) || 0;
+    const aHigh24 = (a24 && a24.avgHighPrice) || 0;
+    const aLow24 = (a24 && a24.avgLowPrice) || 0;
+
+    let change24 = null;
+    if (hasPrices && aHigh24 && aLow24) {
+      const liveMid = (sell + buy) / 2;
+      const avgMid = (aHigh24 + aLow24) / 2;
+      if (avgMid > 0) change24 = (liveMid - avgMid) / avgMid;
+    }
+    let volatility = 0;
+    if (hasPrices && avgHigh && avgLow) {
+      const liveMid = (sell + buy) / 2;
+      const avgMid = (avgHigh + avgLow) / 2;
+      if (avgMid > 0) volatility = Math.abs(liveMid - avgMid) / avgMid;
+    }
+
+    const tHigh = (p && p.highTime) || 0;
+    const tLow = (p && p.lowTime) || 0;
+    const lastTrade = Math.max(tHigh, tLow);
+    const ageMin = lastTrade ? (nowSec - lastTrade) / 60 : Infinity;
+
+    const limit = meta.limit && meta.limit > 0 ? meta.limit : 100;
+    // No floor of 1 here: a near-zero-volume item should resolve to 0 so the
+    // drawer treats it as "too thin to flip" rather than suggesting a buy.
+    const realisticUnits = Math.min(limit, Math.floor(liquidity * MARKET_CAPTURE));
+
+    return {
+      id: meta.id, name: meta.name, examine: meta.examine, members: meta.members,
+      icon: meta.icon, limit, highalch: meta.highalch,
+      buy, sell, hasPrices, tax,
+      profit: margin, roi,           // names mirror computeMetrics for the drawer
+      liquidity, dailyTotal,
+      avgHigh24: aHigh24, avgLow24: aLow24, change24,
+      volatility, ageMin, realisticUnits,
+    };
+  }
 
   /* ===================================================================== *
    *  UI
@@ -688,23 +796,10 @@
       if (r.ageMin > 60) tags.push(el('span', { class: 'item-cell__tag tag--stale', title: `Last traded ${Fmt.ago(r.ageMin)}` }, 'thin'));
       if (r.liquidity > 100_000 && r.ageMin <= 30) tags.push(el('span', { class: 'item-cell__tag tag--hot', title: 'Heavy, fresh volume' }, 'hot'));
 
-      const icon = el('img', { class: 'item-cell__icon', alt: '', loading: 'lazy', width: 32, height: 32 });
-      setItemIcon(icon, r);
-
-      const nameCell = el('td', { class: 'col-item' },
-        el('div', { class: 'item-cell' }, icon,
-          el('span', { class: 'item-cell__name' },
-            r.name,
-            r.members ? el('span', { class: 'members-star', title: 'Members item' }, '★') : null,
-            ...tags,
-          ),
-        ),
-      );
-
       const roiClass = r.roi >= 0.05 ? 'roi-hot' : 'roi-pos';
 
-      const tr = el('tr', { tabindex: '0', role: 'button', 'aria-label': `View plan for ${r.name}` },
-        nameCell,
+      const tr = el('tr', {},
+        itemNameCell(r, tags),
         el('td', { class: 'col-num' }, this.coin(r.buy)),
         el('td', { class: 'col-num' }, this.coin(r.sell)),
         el('td', { class: 'col-num', title: `Capped by ${r.capReason} · buy limit ${Fmt.full(r.limit)}/4h · ~${Fmt.full(r.liquidity)} traded/day` }, Fmt.full(r.qty)),
@@ -714,7 +809,6 @@
         el('td', { class: 'col-num col-vol', title: `${Fmt.full(r.dailyTotal)} units traded in 24h` }, Fmt.gp(r.liquidity)),
       );
       tr.addEventListener('click', () => Drawer.open(r));
-      tr.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); Drawer.open(r); } });
       return tr;
     },
 
@@ -743,59 +837,94 @@
    *  DRAWER (item detail + price history chart + plain-language plan)
    * ===================================================================== */
   const Drawer = {
-    open(r) {
+    current: null,   // resolved commit row {id,name,icon,members,buy,sell,qty} or null
+    itemId: null,
+    lastFocus: null,
+    _chartToken: 0,
+
+    open(item) {
       const d = dom.drawer;
       this.lastFocus = document.activeElement;
-      this.current = r;
-      // Reset the commit button to its default state each time.
-      const commit = $('#drawer-commit', d);
-      commit.textContent = 'Commit this flip to journal';
-      commit.classList.remove('drawer__commit--done');
-      commit.disabled = false;
-      setItemIcon($('#drawer-icon', d), r);
-      $('#drawer-title', d).textContent = r.name;
-      $('#drawer-examine', d).textContent = r.examine || '';
+      this.itemId = item.id;
 
-      // Stat grid
+      // Resolve a concrete flip. Plan rows already carry qty/outlay/planProfit;
+      // explore snapshots get a quantity suggested from the current stack.
+      const hasPlan = item.qty != null;
+      const buy = item.buy, sell = item.sell;
+      const priced = item.hasPrices !== false && buy != null && sell != null && item.profit != null && item.profit > 0;
+      // For explore snapshots, an item with ~no volume resolves to 0 units and
+      // is not offered as a flip (matches the Flip Finder's volume filter).
+      const tooThin = !hasPlan && priced && (item.realisticUnits != null && item.realisticUnits < 1);
+      const flippable = priced && !tooThin;
+      const cap = item.realisticUnits != null ? item.realisticUnits : (item.limit || 1);
+      const qty = hasPlan ? item.qty
+        : (flippable ? Math.min(cap, Math.floor((state.stack || 0) / buy)) : 0);
+      const outlay = hasPlan ? item.outlay : qty * (buy || 0);
+      const planProfit = hasPlan ? item.planProfit : qty * (item.profit || 0);
+      this.current = (flippable && qty >= 1)
+        ? { id: item.id, name: item.name, icon: item.icon, members: item.members, buy, sell, qty }
+        : null;
+
+      setItemIcon($('#drawer-icon', d), item);
+      $('#drawer-title', d).textContent = item.name;
+      $('#drawer-examine', d).textContent = item.examine || '';
+
+      const commit = $('#drawer-commit', d);
+      if (this.current) {
+        commit.hidden = false;
+        commit.disabled = false;
+        commit.classList.remove('drawer__commit--done');
+        commit.textContent = hasPlan
+          ? 'Commit this flip to journal'
+          : `Commit ${Fmt.full(qty)} @ ${Fmt.gp(buy)} → ${Fmt.gp(sell)}`;
+      } else {
+        commit.hidden = true;
+      }
+
       const stats = [
-        ['Buy at', Fmt.full(r.buy) + ' gp'],
-        ['Sell at', Fmt.full(r.sell) + ' gp'],
-        ['Margin / item', Fmt.full(r.profit) + ' gp'],
-        ['GE tax / item', r.tax ? Fmt.full(r.tax) + ' gp' : 'exempt'],
-        ['Return', Fmt.pct(r.roi)],
-        ['Buy limit', Fmt.full(r.limit) + ' / 4h'],
-        ['Volume (24h)', Fmt.full(r.dailyTotal)],
-        ['Last traded', Fmt.ago(r.ageMin)],
-        ['High alch', r.highalch ? Fmt.full(r.highalch) + ' gp' : '-'],
-        ['Volatility', Fmt.pct(r.volatility, 1)],
+        ['Buy at', buy != null ? Fmt.full(buy) + ' gp' : 'no recent buy'],
+        ['Sell at', sell != null ? Fmt.full(sell) + ' gp' : 'no recent sell'],
+        ['Margin / item', item.profit != null ? Fmt.full(item.profit) + ' gp' : '-'],
+        ['Return', item.roi != null ? Fmt.pct(item.roi) : '-'],
+        ['GE tax / item', item.tax ? Fmt.full(item.tax) + ' gp' : (TAX_EXEMPT.has(item.id) ? 'exempt' : '-')],
+        ['Buy limit', Fmt.full(item.limit) + ' / 4h'],
+        ['Volume (24h)', Fmt.full(item.dailyTotal)],
+        ['Vs 24h avg', item.change24 != null ? Fmt.signed(item.change24) : '-'],
+        ['Last traded', Fmt.ago(item.ageMin)],
+        ['High alch', item.highalch ? Fmt.full(item.highalch) + ' gp' : '-'],
       ];
       $('#drawer-stats', d).replaceChildren(...stats.map(([k, v]) =>
         el('div', {}, el('dt', {}, k), el('dd', {}, v))));
 
-      // Plain-language plan
-      const cycleProfit = r.planProfit;
-      $('#drawer-instructions', d).innerHTML = `
-        <span class="step">1. Place a <b>buy offer</b> for <b>${Fmt.full(r.qty)}× ${r.name}</b> at <b>${Fmt.full(r.buy)} gp</b> each (${Fmt.gp(r.outlay)} total).</span>
-        <span class="step">2. Once filled, <b>sell</b> them at <b>${Fmt.full(r.sell)} gp</b> each.</span>
-        <span class="step">3. After the 2% tax you pocket about <b style="color:var(--pos)">${Fmt.gp(cycleProfit)}</b> &mdash; a ${Fmt.pct(r.roi)} return on this flip.</span>
-        <span class="step" style="color:var(--ink-faint)">Buy limit resets every 4 hours, so you can repeat this up to ${BUY_LIMIT_WINDOWS_PER_DAY}× per day.</span>
-      `;
+      const instr = $('#drawer-instructions', d);
+      if (this.current) {
+        instr.innerHTML = `
+          <span class="step">1. Place a <b>buy offer</b> for <b>${Fmt.full(qty)}× ${item.name}</b> at <b>${Fmt.full(buy)} gp</b> each (${Fmt.gp(outlay)} total).</span>
+          <span class="step">2. Once filled, <b>sell</b> at <b>${Fmt.full(sell)} gp</b> each.</span>
+          <span class="step">3. After the 2% tax you pocket about <b style="color:var(--pos)">${Fmt.gp(planProfit)}</b> &mdash; a ${Fmt.pct(item.roi)} return on this flip.</span>
+          <span class="step" style="color:var(--ink-faint)">${hasPlan ? 'Taken from your flip plan.' : 'Quantity suggested from your coin stack & realistic volume.'} Buy limit resets every 4h (${BUY_LIMIT_WINDOWS_PER_DAY}×/day).</span>`;
+      } else if (tooThin) {
+        instr.innerHTML = '<span class="step">Too thinly traded to flip reliably &mdash; there\'s barely any volume on at least one side of the book, so you likely couldn\'t buy and re-sell in quantity. Check the 24h volume below.</span>';
+      } else if (item.hasPrices && item.profit != null && item.profit <= 0) {
+        instr.innerHTML = '<span class="step">No profitable spread right now &mdash; the buy and sell prices are too close once the 2% tax is taken. One to watch; the chart shows its usual range.</span>';
+      } else if (!item.hasPrices) {
+        instr.innerHTML = "<span class=\"step\">This item hasn't traded recently enough to quote a live buy/sell price.</span>";
+      } else {
+        instr.innerHTML = '<span class="step">Your coin stack can\'t cover a single unit at this price.</span>';
+      }
 
-      // Chart (lazy fetch)
-      const chart = $('#drawer-chart', d);
-      chart.innerHTML = '<div class="chart-empty">Loading price history…</div>';
+      this.syncStepControls();
       d.hidden = false;
       document.body.style.overflow = 'hidden';
-      // Move focus into the dialog so keyboard/SR users land inside the modal.
       $('.drawer__close', d).focus();
-      this.loadChart(r.id, chart);
+      this.renderChart();
     },
 
     close() {
       if (dom.drawer.hidden) return;
       dom.drawer.hidden = true;
       document.body.style.overflow = '';
-      // Return focus to whatever opened the drawer (usually the table row).
+      this.itemId = null;
       if (this.lastFocus && document.contains(this.lastFocus)) this.lastFocus.focus();
       this.lastFocus = null;
     },
@@ -805,74 +934,36 @@
       if (!dom.drawer.hidden) trapTabKey(dom.drawer, e);
     },
 
-    async loadChart(id, container) {
-      try {
-        const res = await Api.timeseries(id, '5m');
-        const series = (res.data || []).filter((p) => p.avgHighPrice || p.avgLowPrice);
-        if (series.length < 2) { container.innerHTML = '<div class="chart-empty">Not enough trade history to chart.</div>'; return; }
-        container.innerHTML = '';
-        container.append(this.sparkline(series));
-      } catch (err) {
-        container.innerHTML = '<div class="chart-empty">Couldn\'t load price history.</div>';
-      }
+    syncStepControls() {
+      $$('#drawer-chart-controls [role="radio"]').forEach((b) => {
+        const on = b.dataset.step === state.chartStep;
+        b.setAttribute('aria-checked', String(on));
+        b.tabIndex = on ? 0 : -1;
+      });
     },
 
-    /** Dual-line SVG of high (sell) and low (buy) price over time. */
-    sparkline(series) {
-      const W = 380, H = 130, PAD = 6;
-      const highs = series.map((p) => p.avgHighPrice).filter((v) => v != null);
-      const lows = series.map((p) => p.avgLowPrice).filter((v) => v != null);
-      const all = highs.concat(lows);
-      const min = Math.min(...all), max = Math.max(...all);
-      const range = max - min || 1;
-      const n = series.length;
-      const x = (i) => PAD + (i / (n - 1)) * (W - PAD * 2);
-      const y = (v) => PAD + (1 - (v - min) / range) * (H - PAD * 2);
+    setStep(step) {
+      state.chartStep = step;
+      this.syncStepControls();
+      saveSettings();
+      if (!dom.drawer.hidden && this.itemId != null) this.renderChart();
+    },
 
-      const path = (accessor) => {
-        let dStr = '';
-        series.forEach((p, i) => {
-          const v = accessor(p);
-          if (v == null) return;
-          dStr += (dStr ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1) + ' ';
-        });
-        return dStr;
-      };
-
-      const svgNS = 'http://www.w3.org/2000/svg';
-      const svg = document.createElementNS(svgNS, 'svg');
-      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      svg.setAttribute('role', 'img');
-      svg.setAttribute('aria-label', 'Price history: sell price (gold) and buy price (green)');
-
-      const mk = (tag, attrs) => {
-        const e = document.createElementNS(svgNS, tag);
-        for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-        return e;
-      };
-      // baseline
-      svg.append(mk('line', { class: 'spark-axis', x1: PAD, y1: H - PAD, x2: W - PAD, y2: H - PAD }));
-
-      // Soft area fill under the sell line, then both lines on top.
-      const highD = path((p) => p.avgHighPrice);
-      const validHigh = series.map((p, i) => ({ i, v: p.avgHighPrice })).filter((o) => o.v != null);
-      if (highD && validHigh.length > 1) {
-        const fi = validHigh[0].i;
-        const li = validHigh[validHigh.length - 1].i;
-        const areaD = `${highD}L ${x(li).toFixed(1)} ${(H - PAD).toFixed(1)} L ${x(fi).toFixed(1)} ${(H - PAD).toFixed(1)} Z`;
-        svg.append(mk('path', { class: 'spark-fill', d: areaD }));
+    async renderChart() {
+      const container = $('#drawer-chart', dom.drawer);
+      if (this.itemId == null) return;
+      container.innerHTML = '<div class="chart-empty">Loading price history…</div>';
+      const token = ++this._chartToken;
+      const step = state.chartStep;
+      try {
+        const res = await Api.timeseries(this.itemId, step);
+        if (token !== this._chartToken) return; // superseded by a newer request
+        const series = (res.data || []).filter((p) => p.avgHighPrice != null || p.avgLowPrice != null);
+        if (series.length < 2) { container.innerHTML = '<div class="chart-empty">Not enough trade history for this range.</div>'; return; }
+        container.replaceChildren(priceChart(series, step));
+      } catch {
+        if (token === this._chartToken) container.innerHTML = '<div class="chart-empty">Couldn\'t load price history.</div>';
       }
-      svg.append(mk('path', { class: 'spark-line', d: highD }));
-      svg.append(mk('path', { class: 'spark-line spark-line--low', d: path((p) => p.avgLowPrice) }));
-
-      const wrap = el('div', {});
-      wrap.append(svg);
-      wrap.append(el('div', { style: 'display:flex;gap:14px;justify-content:center;font-size:14px;color:var(--ink-faint);margin-top:4px' },
-        el('span', {}, el('span', { style: 'color:var(--gold)' }, '▬ '), 'sell ', el('b', { style: 'color:var(--gold-bright)' }, Fmt.gp(max))),
-        el('span', {}, el('span', { style: 'color:var(--pos)' }, '▬ '), 'buy ', el('b', { style: 'color:var(--pos)' }, Fmt.gp(min))),
-        el('span', { style: 'color:var(--ink-faint)' }, `${n} pts · last ~${Math.round(n * 5 / 60)}h`),
-      ));
-      return wrap;
     },
   };
 
@@ -901,6 +992,7 @@
       plannedBuy: +e.plannedBuy, plannedSell: +e.plannedSell, plannedQty: +e.plannedQty,
       actualBuy: num(e.actualBuy), actualSell: num(e.actualSell), actualQty: num(e.actualQty),
       status: ['open', 'done', 'cancelled'].includes(e.status) ? e.status : 'open',
+      strategy: typeof e.strategy === 'string' ? e.strategy : null,
       committedAt: num(e.committedAt) || Date.now(),
       completedAt: num(e.completedAt),
       notes: typeof e.notes === 'string' ? e.notes : '',
@@ -944,7 +1036,7 @@
       const entry = normaliseEntry({
         id: uid(), itemId: r.id, itemName: r.name, icon: r.icon, members: r.members,
         plannedBuy: r.buy, plannedSell: r.sell, plannedQty: r.qty,
-        status: 'open', committedAt: Date.now(),
+        status: 'open', strategy: state.strategy, committedAt: Date.now(),
       });
       this.entries.unshift(entry);
       this.save();
@@ -959,13 +1051,21 @@
     metrics() {
       const done = this.entries.filter((e) => e.status === 'done');
       const open = this.entries.filter((e) => e.status === 'open');
-      let realized = 0, invested = 0, wins = 0, taxPaid = 0, best = null;
+      let realized = 0, invested = 0, wins = 0, taxPaid = 0, best = null, worst = null, holdSum = 0, holdN = 0;
+      const byItem = new Map();
       for (const e of done) {
         const ec = entryEconomics(e);
         realized += ec.profit; invested += ec.invested; taxPaid += ec.taxPer * ec.qty;
         if (ec.profit > 0) wins++;
         if (!best || ec.profit > best.profit) best = { name: e.itemName, profit: ec.profit };
+        if (!worst || ec.profit < worst.profit) worst = { name: e.itemName, profit: ec.profit };
+        if (e.completedAt && e.committedAt) { holdSum += (e.completedAt - e.committedAt); holdN++; }
+        byItem.set(e.itemName, (byItem.get(e.itemName) || 0) + ec.profit);
       }
+      const topItems = [...byItem.entries()]
+        .map(([label, value]) => ({ label, value }))
+        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+        .slice(0, 8);
       return {
         doneCount: done.length, openCount: open.length,
         realized, invested,
@@ -973,8 +1073,9 @@
         winRate: done.length ? wins / done.length : 0,
         avgPerFlip: done.length ? Math.round(realized / done.length) : 0,
         taxPaid: Math.round(taxPaid),
+        avgHoldHours: holdN ? holdSum / holdN / 3_600_000 : null,
         openProjected: open.reduce((s, e) => s + entryEconomics(e).profit, 0),
-        best,
+        best, worst, topItems,
       };
     },
 
@@ -1037,26 +1138,117 @@
     return svg;
   }
 
+  /**
+   * Rich price-history chart: shaded buy↔sell spread band, both price lines,
+   * a daily-volume histogram beneath, gridlines with price labels, and dated
+   * x-axis endpoints. Returns a <div> with the SVG plus a legend.
+   */
+  function priceChart(series, step) {
+    const W = 720, H = 280;
+    const LEFT = 50, RIGHT = 12, TOP = 12;
+    const priceBot = 188, volTop = 208, volBot = 262;
+    const n = series.length;
+
+    const highs = series.map((p) => p.avgHighPrice).filter((v) => v != null);
+    const lows = series.map((p) => p.avgLowPrice).filter((v) => v != null);
+    const vals = highs.concat(lows);
+    let min = Math.min(...vals), max = Math.max(...vals);
+    if (!isFinite(min) || !isFinite(max)) { min = 0; max = 1; }
+    if (min === max) { min -= 1; max += 1; }
+    const padv = (max - min) * 0.08; min -= padv; max += padv;
+    const range = max - min || 1;
+    const maxVol = Math.max(1, ...series.map((p) => (p.highPriceVolume || 0) + (p.lowPriceVolume || 0)));
+
+    const x = (i) => LEFT + (n === 1 ? 0 : (i / (n - 1)) * (W - LEFT - RIGHT));
+    const yP = (v) => TOP + (1 - (v - min) / range) * (priceBot - TOP);
+    const yV = (v) => volBot - (v / maxVol) * (volBot - volTop);
+
+    const line = (acc) => {
+      let d = '';
+      series.forEach((p, i) => { const v = acc(p); if (v == null) return; d += (d ? 'L' : 'M') + x(i).toFixed(1) + ' ' + yP(v).toFixed(1) + ' '; });
+      return d;
+    };
+
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Price history with daily traded volume' });
+
+    // Horizontal gridlines + price labels.
+    const ticks = 4;
+    for (let t = 0; t <= ticks; t++) {
+      const v = min + range * (t / ticks);
+      const yy = yP(v);
+      svg.append(svgEl('line', { class: 'grid-line', x1: LEFT, y1: yy.toFixed(1), x2: W - RIGHT, y2: yy.toFixed(1) }));
+      const lab = svgEl('text', { class: 'axis-label', x: (LEFT - 5).toFixed(1), y: (yy + 3.5).toFixed(1), 'text-anchor': 'end' });
+      lab.textContent = Fmt.gp(v);
+      svg.append(lab);
+    }
+
+    // Volume histogram.
+    const bw = Math.max(1, ((W - LEFT - RIGHT) / Math.max(1, n)) * 0.7);
+    series.forEach((p, i) => {
+      const v = (p.highPriceVolume || 0) + (p.lowPriceVolume || 0);
+      if (!v) return;
+      const yy = yV(v);
+      svg.append(svgEl('rect', { class: 'vol-bar', x: (x(i) - bw / 2).toFixed(1), y: yy.toFixed(1), width: bw.toFixed(1), height: Math.max(0, volBot - yy).toFixed(1) }));
+    });
+    svg.append(svgEl('line', { class: 'grid-line', x1: LEFT, y1: volBot, x2: W - RIGHT, y2: volBot }));
+
+    // Shaded spread band between the high and low lines.
+    const valid = series.map((p, i) => i).filter((i) => series[i].avgHighPrice != null && series[i].avgLowPrice != null);
+    if (valid.length > 1) {
+      let dd = '';
+      valid.forEach((i, k) => { dd += (k ? 'L' : 'M') + x(i).toFixed(1) + ' ' + yP(series[i].avgHighPrice).toFixed(1) + ' '; });
+      for (let k = valid.length - 1; k >= 0; k--) { const i = valid[k]; dd += 'L' + x(i).toFixed(1) + ' ' + yP(series[i].avgLowPrice).toFixed(1) + ' '; }
+      dd += 'Z';
+      svg.append(svgEl('path', { class: 'spark-fill', d: dd }));
+    }
+    svg.append(svgEl('path', { class: 'spark-line', d: line((p) => p.avgHighPrice) }));
+    svg.append(svgEl('path', { class: 'spark-line spark-line--low', d: line((p) => p.avgLowPrice) }));
+
+    // Dated x-axis endpoints.
+    const withTime = step === '5m' || step === '1h';
+    const fmtT = (ts) => {
+      const dt = new Date(ts * 1000);
+      const day = dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      return withTime ? `${day} ${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : day;
+    };
+    const t0 = svgEl('text', { class: 'axis-label', x: LEFT, y: (H - 4).toFixed(1), 'text-anchor': 'start' });
+    t0.textContent = fmtT(series[0].timestamp);
+    const t1 = svgEl('text', { class: 'axis-label', x: (W - RIGHT).toFixed(1), y: (H - 4).toFixed(1), 'text-anchor': 'end' });
+    t1.textContent = fmtT(series[n - 1].timestamp);
+    svg.append(t0, t1);
+
+    const lastHigh = highs[highs.length - 1];
+    const lastLow = lows[lows.length - 1];
+    return el('div', {},
+      svg,
+      el('div', { class: 'chart-legend' },
+        el('span', {}, el('i', { class: 'swatch swatch--sell' }), 'sell ', el('b', {}, Fmt.gp(lastHigh))),
+        el('span', {}, el('i', { class: 'swatch swatch--buy' }), 'buy ', el('b', {}, Fmt.gp(lastLow))),
+        el('span', { class: 'chart-legend__dim' }, `${n} points`),
+      ),
+    );
+  }
+
+  /** Horizontal bar list (HTML) for ranked values, e.g. profit by item. */
+  function barList(items) {
+    const max = Math.max(1, ...items.map((i) => Math.abs(i.value)));
+    return el('div', { class: 'barlist' }, ...items.map((it) =>
+      el('div', { class: 'barlist__row' },
+        el('span', { class: 'barlist__label', title: it.label }, it.label),
+        el('span', { class: 'barlist__track' },
+          el('span', { class: `barlist__fill ${it.value >= 0 ? 'barlist__fill--pos' : 'barlist__fill--neg'}`, style: `width:${Math.max(2, Math.abs(it.value) / max * 100)}%` })),
+        el('span', { class: `barlist__val ${it.value >= 0 ? 'gp--profit' : 'gp--loss'}` }, Fmt.gp(it.value)),
+      )));
+  }
+
   const JournalUI = {
     filter: 'all',
-    open: false,
 
     init() {
       const s = Store.get(CACHE.settings) || {};
       this.filter = ['all', 'open', 'done', 'cancelled'].includes(s.journalFilter) ? s.journalFilter : 'all';
-      this.open = !!s.journalOpen;
       this.applyFilterButtons();
-      $('#journal-toggle').setAttribute('aria-expanded', String(this.open));
-      $('#journal-body').hidden = !this.open;
       this.render();
-    },
-
-    toggle(force) {
-      this.open = force != null ? force : !this.open;
-      $('#journal-toggle').setAttribute('aria-expanded', String(this.open));
-      $('#journal-body').hidden = !this.open;
-      saveSettings();
-      if (this.open) this.render();
     },
 
     applyFilterButtons() {
@@ -1074,27 +1266,25 @@
       this.renderTable();
     },
 
+    /** Full render of the journal view. */
     render() {
-      this.renderChips();
+      this.updateBadge();
       this.renderMetrics();
-      this.renderChart();
+      this.renderCharts();
       this.renderTable();
     },
 
-    chip(text, value, kind) {
-      const c = el('span', { class: `jchip ${kind ? 'jchip--' + kind : ''}`.trim() }, text);
-      if (value != null) c.append(el('b', {}, value));
-      return c;
+    /** Keep the nav badge live even when the journal view isn't showing. */
+    refresh() {
+      this.updateBadge();
+      if (state.view === 'journal') this.render();
     },
 
-    renderChips() {
-      const m = Journal.metrics();
-      const net = m.realized;
-      $('#journal-chips').replaceChildren(
-        this.chip(`${m.openCount} open`),
-        this.chip(`${m.doneCount} done`),
-        this.chip('net ', Fmt.gp(net), net >= 0 ? 'profit' : 'loss'),
-      );
+    updateBadge() {
+      const badge = $('#nav-journal-badge');
+      const open = Journal.metrics().openCount;
+      if (open > 0) { badge.hidden = false; badge.textContent = String(open); }
+      else badge.hidden = true;
     },
 
     renderMetrics() {
@@ -1105,20 +1295,25 @@
         sub ? el('span', { class: 'stat__label', style: 'text-transform:none;margin-top:2px' }, sub) : null,
       );
       const profitNode = el('span', { class: 'gp ' + (m.realized >= 0 ? 'gp--profit' : 'gp--loss'), title: Fmt.full(m.realized) + ' gp' }, Fmt.gp(m.realized));
+      const hold = m.avgHoldHours == null ? null
+        : (m.avgHoldHours < 1 ? `~${Math.round(m.avgHoldHours * 60)}m avg hold` : `~${m.avgHoldHours.toFixed(1)}h avg hold`);
       $('#journal-metrics').replaceChildren(
-        card('Realised P/L', profitNode, m.openProjected ? `+${Fmt.gp(m.openProjected)} projected open` : null),
+        card('Realised P/L', profitNode, m.openProjected ? `+${Fmt.gp(m.openProjected)} projected open` : (m.taxPaid ? `${Fmt.gp(m.taxPaid)} tax paid` : null)),
         card('Completed', String(m.doneCount), `${m.openCount} still open`),
         card('Win rate', m.doneCount ? Fmt.pct(m.winRate, 0) : '—', m.best ? `best ${Fmt.gp(m.best.profit)}` : null),
-        card('Realised ROI', m.invested ? Fmt.pct(m.roi) : '—', m.doneCount ? `avg ${Fmt.gp(m.avgPerFlip)}/flip` : null),
+        card('Realised ROI', m.invested ? Fmt.pct(m.roi) : '—', hold || (m.doneCount ? `avg ${Fmt.gp(m.avgPerFlip)}/flip` : null)),
       );
     },
 
-    renderChart() {
+    renderCharts() {
+      const m = Journal.metrics();
       const series = Journal.cumulativeSeries();
-      const card = $('#journal-chart-card');
-      if (series.length < 2) { card.hidden = true; return; }
-      card.hidden = false;
-      $('#journal-chart').replaceChildren(cumulativeChart(series));
+      $('#journal-chart').replaceChildren(series.length >= 2
+        ? cumulativeChart(series)
+        : el('p', { class: 'chart-empty' }, 'Complete at least two flips to chart your progress.'));
+      $('#journal-byitem').replaceChildren(m.topItems.length
+        ? barList(m.topItems)
+        : el('p', { class: 'chart-empty' }, 'Complete a flip to see which items pay best.'));
     },
 
     renderTable() {
@@ -1127,15 +1322,14 @@
       const empty = $('#journal-empty');
       if (!Journal.entries.length) {
         wrap.hidden = true; empty.hidden = false;
-        empty.innerHTML = 'No committed flips yet. Open any flip from your plan and hit <b>Commit this flip to journal</b> to lock in the buy/sell prices &mdash; they\'ll stay here even after prices refresh.';
-        return;
-      }
-      if (!rows.length) {
-        wrap.hidden = true; empty.hidden = false;
-        empty.textContent = `No ${this.filter} flips.`;
         return;
       }
       empty.hidden = true; wrap.hidden = false;
+      if (!rows.length) {
+        $('#journal-body-rows').replaceChildren(
+          el('tr', {}, el('td', { class: 'journal-nomatch', colspan: '8' }, `No ${this.filter} flips.`)));
+        return;
+      }
       $('#journal-body-rows').replaceChildren(...rows.map((e) => this.row(e)));
     },
 
@@ -1144,10 +1338,13 @@
       const icon = el('img', { class: 'item-cell__icon', alt: '', loading: 'lazy', width: 28, height: 28 });
       setItemIcon(icon, { id: e.itemId, icon: e.icon });
 
+      const stratName = e.strategy && STRATEGIES[e.strategy] ? STRATEGIES[e.strategy].name : null;
       const nameCell = el('td', { class: 'col-item' },
         el('div', { class: 'item-cell' }, icon,
-          el('span', { class: 'item-cell__name' }, e.itemName,
-            e.members ? el('span', { class: 'members-star', title: 'Members item' }, '★') : null)));
+          el('div', { class: 'item-cell__namecol' },
+            el('span', { class: 'item-cell__name' }, e.itemName,
+              e.members ? el('span', { class: 'members-star', title: 'Members item' }, '★') : null),
+            stratName ? el('span', { class: 'cell-sub' }, 'via ' + stratName) : null)));
 
       const badge = el('td', {}, el('span', { class: `status-badge status-badge--${e.status}` }, e.status));
 
@@ -1286,8 +1483,8 @@
     reader.onload = () => {
       try {
         const { added, skipped } = Journal.importPayload(JSON.parse(reader.result));
+        if (added) View.go('journal');
         JournalUI.render();
-        if (added && !JournalUI.open) JournalUI.toggle(true);
         UI.toast(`Imported ${added} flip${added === 1 ? '' : 's'}${skipped ? `, skipped ${skipped}` : ''}.`, added ? 'ok' : '');
       } catch (err) {
         UI.toast(`Import failed: ${err.message}`, 'error');
@@ -1296,6 +1493,168 @@
     reader.onerror = () => UI.toast('Could not read that file.', 'error');
     reader.readAsText(file);
   }
+
+  /* ===================================================================== *
+   *  VIEW CONTROLLER — switch between Flip Finder / Explore / Journal
+   * ===================================================================== */
+  const VIEWS = ['flipper', 'explore', 'journal'];
+  const View = {
+    go(name) {
+      if (!VIEWS.includes(name)) name = 'flipper';
+      state.view = name;
+      VIEWS.forEach((v) => {
+        $('#view-' + v).hidden = v !== name;
+        const tab = $('#nav-' + v);
+        tab.setAttribute('aria-selected', String(v === name));
+        tab.tabIndex = v === name ? 0 : -1;
+      });
+      saveSettings();
+      if (name === 'explore') Explore.onEnter();
+      if (name === 'journal') JournalUI.render();
+    },
+  };
+
+  /* ===================================================================== *
+   *  EXPLORE — free-text item search + market browse modes
+   * ===================================================================== */
+  const EXPLORE_LIMIT = 60;
+  const EXPLORE_MODES = {
+    traded: { hint: 'The most actively traded items right now — the easiest to flip in volume.', sort: (a, b) => b.dailyTotal - a.dailyTotal, ok: (s) => s.dailyTotal > 0 },
+    risers: { hint: 'Biggest price risers vs. their 24-hour average. Momentum — or a spike about to cool.', sort: (a, b) => (b.change24 || 0) - (a.change24 || 0), ok: (s) => s.change24 != null && s.change24 > 0 && s.liquidity >= 50 },
+    fallers: { hint: 'Biggest fallers vs. their 24-hour average. Potential dips to buy — or knives still falling.', sort: (a, b) => (a.change24 || 0) - (b.change24 || 0), ok: (s) => s.change24 != null && s.change24 < 0 && s.liquidity >= 50 },
+    margin: {
+      hint: 'Widest buy/sell spreads after tax, with stale and outlier prints filtered out. Always check the volume before committing.',
+      sort: (a, b) => (b.roi || 0) - (a.roi || 0),
+      ok: (s) => s.roi != null && s.roi > 0 && s.roi <= 1 && s.liquidity >= 20 && s.ageMin <= 6 * 60
+        && !(s.avgHigh24 && s.sell > s.avgHigh24 * OUTLIER_FACTOR)
+        && !(s.avgLow24 && s.buy < s.avgLow24 / OUTLIER_FACTOR),
+    },
+  };
+
+  const Explore = {
+    query: '',
+    loaded: false,
+
+    async onEnter() {
+      // Explore can be the first thing a user opens, and prices go stale — so
+      // fetch when missing or past the TTL (ensurePrices is a no-op if fresh).
+      const needFetch = !state.latest || Date.now() - state.pricesAt >= PRICES_TTL;
+      if (needFetch) {
+        this.setLoading(true);
+        try { await ensurePrices(); }
+        catch (err) { this.setLoading(false); UI.toast(`Couldn't load prices (${err.message}).`, 'error'); return; }
+        this.setLoading(false);
+        UI.updatedMeta();
+      }
+      this.loaded = true;
+      this.render();
+    },
+
+    setLoading(on) {
+      $('#explore-loader').hidden = !on;
+      if (on) { $('#search-wrap').hidden = true; $('#explore-empty').hidden = true; }
+    },
+
+    setMode(mode) {
+      if (!EXPLORE_MODES[mode]) return;
+      state.exploreMode = mode;
+      $$('#explore-modes [role="radio"]').forEach((b) => {
+        const on = b.dataset.mode === mode;
+        b.setAttribute('aria-checked', String(on));
+        b.tabIndex = on ? 0 : -1;
+      });
+      saveSettings();
+      if (this.loaded) this.render();
+      else if (state.view === 'explore') this.onEnter(); // recover from a failed load
+    },
+
+    setQuery(q) {
+      this.query = q.trim().toLowerCase();
+      if (this.loaded) this.render();
+      else if (state.view === 'explore') this.onEnter(); // recover from a failed load
+    },
+
+    /** Build the current result list: search results, or a browse mode. */
+    results() {
+      if (!state.mapping) return [];
+      const nowSec = Math.floor((state.pricesAt || Date.now()) / 1000);
+      const wantMembers = state.account === 'members';
+      const out = [];
+
+      if (this.query) {
+        const q = this.query;
+        for (const meta of state.mapping.values()) {
+          if (!wantMembers && meta.members) continue;
+          const name = meta.name.toLowerCase();
+          if (!name.includes(q)) continue;
+          const s = itemSnapshot(meta, nowSec);
+          s._rank = name === q ? 0 : name.startsWith(q) ? 1 : 2;
+          out.push(s);
+        }
+        out.sort((a, b) => a._rank - b._rank || b.dailyTotal - a.dailyTotal);
+        return out.slice(0, EXPLORE_LIMIT);
+      }
+
+      const mode = EXPLORE_MODES[state.exploreMode] || EXPLORE_MODES.traded;
+      for (const meta of state.mapping.values()) {
+        if (!wantMembers && meta.members) continue;
+        const s = itemSnapshot(meta, nowSec);
+        if (!s.hasPrices || !mode.ok(s)) continue;
+        out.push(s);
+      }
+      out.sort(mode.sort);
+      return out.slice(0, EXPLORE_LIMIT);
+    },
+
+    render() {
+      if (!this.loaded) return;
+      const hint = $('#explore-hint');
+      const rows = this.results();
+      $$('#explore-modes [role="radio"]').forEach((b) => b.style.opacity = this.query ? '0.45' : '');
+      hint.textContent = this.query
+        ? `${rows.length}${rows.length === EXPLORE_LIMIT ? '+' : ''} item${rows.length === 1 ? '' : 's'} matching “${this.query}”.`
+        : (EXPLORE_MODES[state.exploreMode] || EXPLORE_MODES.traded).hint;
+
+      const wrap = $('#search-wrap');
+      const empty = $('#explore-empty');
+      if (!rows.length) {
+        wrap.hidden = true; empty.hidden = false;
+        $('#explore-empty-text').textContent = this.query
+          ? `No items match “${this.query}”${state.account === 'f2p' ? ' in F2P' : ''}.`
+          : 'No items to show for this view right now.';
+        UI.announce(this.query ? `No items match ${this.query}.` : 'No items to show.');
+        return;
+      }
+      empty.hidden = true; wrap.hidden = false;
+      $('#search-rows').replaceChildren(...rows.map((s) => this.row(s)));
+      UI.announce(`${rows.length}${rows.length === EXPLORE_LIMIT ? '+' : ''} item${rows.length === 1 ? '' : 's'} shown.`);
+    },
+
+    row(s) {
+      const nameCell = itemNameCell(s);
+
+      const marginCell = s.profit == null
+        ? el('td', { class: 'col-num' }, '—')
+        : el('td', { class: 'col-num ' + (s.profit >= 0 ? 'roi-pos' : '') },
+          el('span', { class: s.profit >= 0 ? 'gp--profit' : 'gp--loss' }, Fmt.gp(s.profit)),
+          el('span', { class: 'cell-sub' }, s.roi != null ? Fmt.pct(s.roi) : ''));
+
+      const changeCell = s.change24 == null
+        ? el('td', { class: 'col-num' }, '—')
+        : el('td', { class: 'col-num ' + (s.change24 >= 0 ? 'roi-pos' : 'roi-neg') }, Fmt.signed(s.change24));
+
+      const tr = el('tr', {},
+        nameCell,
+        el('td', { class: 'col-num' }, s.buy != null ? UI.coin(s.buy) : '—'),
+        el('td', { class: 'col-num' }, s.sell != null ? UI.coin(s.sell) : '—'),
+        marginCell,
+        changeCell,
+        el('td', { class: 'col-num col-vol', title: `${Fmt.full(s.dailyTotal)} units traded in 24h` }, Fmt.gp(s.liquidity)),
+      );
+      tr.addEventListener('click', () => Drawer.open(s));
+      return tr;
+    },
+  };
 
   /* ===================================================================== *
    *  EVENTS
@@ -1362,16 +1721,50 @@
       if (!r) return;
       Journal.commit(r);
       const btn = $('#drawer-commit');
-      btn.textContent = 'Committed ✓';
+      btn.textContent = 'Committed ✓ — view in Journal tab';
       btn.classList.add('drawer__commit--done');
       btn.disabled = true;
-      JournalUI.render();
-      if (!JournalUI.open) { JournalUI.toggle(true); $('#journal').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
-      UI.toast(`Committed: ${Fmt.full(r.qty)}× ${r.name}`, 'ok');
+      JournalUI.refresh();
+      UI.toast(`Committed: ${Fmt.full(r.qty)}× ${r.name}. See the Journal tab.`, 'ok');
     });
 
-    // Journal: collapse toggle.
-    $('#journal-toggle').addEventListener('click', () => JournalUI.toggle());
+    // Top navigation (click + arrow keys).
+    const viewnav = $('#viewnav');
+    viewnav.addEventListener('click', (e) => {
+      const tab = e.target.closest('[data-view]');
+      if (tab) { View.go(tab.dataset.view); tab.focus(); }
+    });
+    viewnav.addEventListener('keydown', (e) => {
+      const tabs = $$('[role="tab"]', viewnav);
+      const i = tabs.indexOf(document.activeElement);
+      if (i < 0) return;
+      let n;
+      if (e.key === 'ArrowRight') n = (i + 1) % tabs.length;
+      else if (e.key === 'ArrowLeft') n = (i - 1 + tabs.length) % tabs.length;
+      else if (e.key === 'Home') n = 0;
+      else if (e.key === 'End') n = tabs.length - 1;
+      else return;
+      e.preventDefault();
+      tabs[n].focus();
+      View.go(tabs[n].dataset.view);
+    });
+
+    // Explore: search box (debounced) + browse modes.
+    $('#search-input').addEventListener('input', debounce((e) => Explore.setQuery(e.target.value), 160));
+    const modes = $('#explore-modes');
+    modes.addEventListener('click', (e) => {
+      const b = e.target.closest('[role="radio"]');
+      if (b) Explore.setMode(b.dataset.mode);
+    });
+    wireRadioKeys(modes, (b) => Explore.setMode(b.dataset.mode));
+
+    // Drawer chart range selector.
+    const chartCtl = $('#drawer-chart-controls');
+    chartCtl.addEventListener('click', (e) => {
+      const b = e.target.closest('[role="radio"]');
+      if (b) Drawer.setStep(b.dataset.step);
+    });
+    wireRadioKeys(chartCtl, (b) => Drawer.setStep(b.dataset.step));
 
     // Journal: status filter (click + arrow keys).
     const filters = $('#journal-filters');
@@ -1496,7 +1889,9 @@
       account: state.account,
       filters: state.filters,
       autoRefresh: state.autoRefresh,
-      journalOpen: JournalUI.open,
+      view: state.view,
+      exploreMode: state.exploreMode,
+      chartStep: state.chartStep,
       journalFilter: JournalUI.filter,
     });
   }
@@ -1522,6 +1917,8 @@
     state.account = s.account === 'f2p' ? 'f2p' : 'members';
     setRadioState(dom.accountToggle, $(`[data-account="${state.account}"]`, dom.accountToggle));
     selectStrategy(s.strategy || state.strategy);
+    if (EXPLORE_MODES[s.exploreMode]) state.exploreMode = s.exploreMode;
+    if (['5m', '1h', '6h', '24h'].includes(s.chartStep)) state.chartStep = s.chartStep;
     UI.stackEcho();
   }
 
@@ -1532,10 +1929,14 @@
     UI.cache();
     loadSettings();
     Journal.load();
-    JournalUI.init();
+    JournalUI.init();                   // load saved filter FIRST (before any saveSettings)
+    Explore.setMode(state.exploreMode); // sync browse-mode buttons to saved pref
     wireEvents();
     setupAutoRefresh();
     UI.status('idle', 'Ready to crunch the market.');
+    // Restore the last view (Explore/Journal lazy-load what they need).
+    const saved = (Store.get(CACHE.settings) || {}).view;
+    View.go(VIEWS.includes(saved) ? saved : 'flipper');
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
